@@ -1,5 +1,7 @@
 # Superplan
 
+> ℹ️ 本项目基于 [othmanadi/planning-with-files](https://github.com/othmanadi/planning-with-files) 修改而来。
+
 [![Release](https://img.shields.io/github/v/release/Syoong-s/Superplan?include_prereleases)](https://github.com/Syoong-s/Superplan/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Hosts](https://img.shields.io/badge/适用于-Codex%20%7C%20Claude%20Code-8A2BE2)](#安装)
