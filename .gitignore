@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Backups
+*.bak
+*.orig
+
+# Superplan runtime artifacts (never ship these)
+.planning/
+.superplan.json
+.superplan.lock
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

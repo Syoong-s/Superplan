@@ -1,0 +1,95 @@
+{
+  "description": "Restore, checkpoint, and reconcile explicitly activated Superplan tasks on Codex and Claude Code (Linux/WSL).",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}/skills/superplan/scripts/superplan.py\" hook",
+            "timeout": 10,
+            "statusMessage": "Restoring Superplan checkpoint",
+            "additionalContextLimit": 7000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}/skills/superplan/scripts/superplan.py\" hook",
+            "timeout": 10,
+            "statusMessage": "Checking Superplan checkpoint pressure",
+            "additionalContextLimit": 1600
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}/skills/superplan/scripts/superplan.py\" hook",
+            "timeout": 15,
+            "statusMessage": "Saving bounded Superplan recovery tail"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}/skills/superplan/scripts/superplan.py\" hook",
+            "timeout": 15,
+            "statusMessage": "Restoring Superplan checkpoint after compaction",
+            "additionalContextLimit": 7000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}/skills/superplan/scripts/superplan.py\" hook",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "other",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}/skills/superplan/scripts/superplan.py\" hook",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}/skills/superplan/scripts/superplan.py\" hook",
+            "timeout": 10,
+            "additionalContextLimit": 1500,
+            "statusMessage": "Continuing active Superplan task"
+          }
+        ]
+      }
+    ]
+  }
+}

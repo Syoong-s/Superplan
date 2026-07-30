@@ -1,0 +1,12 @@
+{
+  "name": "superplan-plugin",
+  "plugins": [
+    {
+      "name": "superplan",
+      "source": {
+        "source": "local",
+        "path": "."
+      }
+    }
+  ]
+}

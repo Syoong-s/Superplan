@@ -1,0 +1,7 @@
+interface:
+  display_name: "Superplan"
+  short_description: "Boundary-based persistent planning for Linux"
+  default_prompt: "Use $superplan to maintain persistent task checkpoints."
+
+policy:
+  allow_implicit_invocation: true
