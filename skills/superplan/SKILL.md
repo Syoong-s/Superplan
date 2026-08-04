@@ -115,6 +115,8 @@ SUPERPLAN_CHECKPOINT_REPROMPT_TOOLS
 
 Immediately before the final response for an active turn, ensure the planning files contain one coherent handoff. The `Stop` hook accepts an already refreshed checkpoint or requests one continuation. It always allows the next Stop if no complete checkpoint was produced, preventing a loop.
 
+When lifecycle hooks are active and trusted, make the batched planning-file update the last necessary file-edit operation before drafting the final response. Do **not** run the plain `checkpoint` command afterward: `PostToolUse` or `Stop` records the updated hashes automatically. The plain command is only the manual fallback described below for disabled or untrusted hooks.
+
 When the persistent task is genuinely finished, update the three files first and close the active plan:
 
 ```bash

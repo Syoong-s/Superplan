@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Bound Agent-issued plain `checkpoint` commands to their actual host turn during `PostToolUse`.
+- Made `Stop` silently accept a same-turn manual checkpoint only when no substantive tool call followed it, preventing false continuation prompts and duplicate final summaries while preserving stale-checkpoint enforcement.
+
+### Changed
+- Clarified model guidance that active lifecycle hooks record planning-file edits automatically and that the plain `checkpoint` command is only a hookless fallback.
+- Added focused standard-library regression coverage for changed, current-turn manual, previous-turn manual, post-checkpoint work, and one-continuation Stop behavior.
+
 ## 1.0.0
 
 First public release. Superplan now runs in **both Codex and Claude Code** as a single, shared plugin.
