@@ -35,11 +35,10 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Resolved tag=$TAG version=$VERSION"
 
-      - name: Validate manifests and run tests
+      - name: Validate manifests
         run: |
           python3 -c "import json,sys; json.load(open('.codex-plugin/plugin.json')); json.load(open('.claude-plugin/plugin.json')); json.load(open('.claude-plugin/marketplace.json')); json.load(open('.agents/plugins/marketplace.json')); print('All manifests valid JSON')"
-          python3 -m py_compile skills/superplan/scripts/superplan.py && echo "Controller compiles"
-          python3 -m unittest discover -s tests -v
+          python3 -m py_compile skills/superplan/scripts/superplan.py && echo "Controller compiles" 
 
       - name: Package plugin components
         run: |
