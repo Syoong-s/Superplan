@@ -174,7 +174,7 @@ SUPERPLAN_TAIL_SCAN_BYTES
 | 技能 | - | - | `skills/superplan/SKILL.md` |
 | 控制器 | - | - | `skills/superplan/scripts/superplan.py` |
 
-两套宿主使用同一套钩子 I/O 协议：stdin 接收 JSON（`hook_event_name`、`session_id`、`transcript_path`、`cwd`、`tool_name`、`tool_input`、`tool_response`、`stop_hook_active`……），stdout 输出 `{"hookSpecificOutput":{"hookEventName":…,"additionalContext":…}}` / `{"decision":"block","reason":…}`。唯一的 `hooks.json` 命令通过 `${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}` 引用控制器——当前运行的宿主替换自己的变量，另一个展开为空，因此一条命令在两套运行时下都能正确解析。
+两套宿主使用同一套钩子 I/O 协议：stdin 接收 JSON（`hook_event_name`、`session_id`、`transcript_path`、`cwd`、`tool_name`、`tool_input`、`tool_response`、`stop_hook_active`……），stdout 输出 `{"hookSpecificOutput":{"hookEventName":…,"additionalContext":…}}` / `{"decision":"block","reason":…}`。唯一的 `hooks.json` 命令通过 `${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}` 引用控制器——当前运行的宿主替换自己的变量，另一个展开为空，因此一条命令在两套运行时下都能正确解析。
 
 ## 🧪 开发验证
 

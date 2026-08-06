@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}/skills/superplan/scripts/superplan.py\" hook",
+            "command": "python3 -B \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/skills/superplan/scripts/superplan.py\" hook",
             "timeout": 10,
             "statusMessage": "Restoring Superplan checkpoint",
             "additionalContextLimit": 7000
@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}/skills/superplan/scripts/superplan.py\" hook",
+            "command": "python3 -B \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/skills/superplan/scripts/superplan.py\" hook",
             "timeout": 10,
             "statusMessage": "Checking Superplan checkpoint pressure",
             "additionalContextLimit": 1600
@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}/skills/superplan/scripts/superplan.py\" hook",
+            "command": "python3 -B \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/skills/superplan/scripts/superplan.py\" hook",
             "timeout": 15,
             "statusMessage": "Saving bounded Superplan recovery tail"
           }
@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}/skills/superplan/scripts/superplan.py\" hook",
+            "command": "python3 -B \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/skills/superplan/scripts/superplan.py\" hook",
             "timeout": 15,
             "statusMessage": "Restoring Superplan checkpoint after compaction"
           }
@@ -59,7 +59,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}/skills/superplan/scripts/superplan.py\" hook",
+            "command": "python3 -B \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/skills/superplan/scripts/superplan.py\" hook",
             "timeout": 30
           }
         ]
@@ -71,7 +71,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}/skills/superplan/scripts/superplan.py\" hook",
+            "command": "python3 -B \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/skills/superplan/scripts/superplan.py\" hook",
             "timeout": 3
           }
         ]
@@ -82,7 +82,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}/skills/superplan/scripts/superplan.py\" hook",
+            "command": "python3 -B \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/skills/superplan/scripts/superplan.py\" hook",
             "timeout": 10,
             "additionalContextLimit": 1500,
             "statusMessage": "Continuing active Superplan task"

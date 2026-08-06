@@ -174,7 +174,7 @@ Defaults are deliberately sparse; ordinary short tasks usually write only at tur
 | Skills | — | — | `skills/superplan/SKILL.md` |
 | Controller | — | — | `skills/superplan/scripts/superplan.py` |
 
-Both hosts use the same hook I/O contract: JSON on stdin (`hook_event_name`, `session_id`, `transcript_path`, `cwd`, `tool_name`, `tool_input`, `tool_response`, `stop_hook_active` …) and `{"hookSpecificOutput":{"hookEventName":…,"additionalContext":…}}` / `{"decision":"block","reason":…}` on stdout. The single `hooks.json` command references the controller via `${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}` — whichever host is running substitutes its own variable and the other expands to empty, so one command resolves correctly under both runtimes.
+Both hosts use the same hook I/O contract: JSON on stdin (`hook_event_name`, `session_id`, `transcript_path`, `cwd`, `tool_name`, `tool_input`, `tool_response`, `stop_hook_active` …) and `{"hookSpecificOutput":{"hookEventName":…,"additionalContext":…}}` / `{"decision":"block","reason":…}` on stdout. The single `hooks.json` command references the controller via `${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}` — whichever host is running substitutes its own variable and the other expands to empty, so one command resolves correctly under both runtimes.
 
 ## 🧪 Development validation
 
