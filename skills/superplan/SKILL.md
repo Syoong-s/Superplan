@@ -139,7 +139,7 @@ minimum active time:       1200 seconds
 maximum active time:       3600 seconds
 minimum substantive tools: 8
 hard pressure:             24
-meaningful events:         12
+weighted meaningful tools: 12
 tool output:               240000 characters
 transcript growth:         1310720 bytes
 reprompt interval:         5 tools
@@ -147,6 +147,15 @@ active gap cap:            300 seconds
 ```
 
 Active time is not wall-clock time. On each substantive `PostToolUse`, Superplan adds the interval since the preceding substantive tool event, capped by `SUPERPLAN_ACTIVE_GAP_CAP_SECONDS`. Long idle periods, overnight pauses, and suspended sessions therefore cannot directly exhaust the maximum-time boundary. The first tool event after a checkpoint establishes the activity timestamp without adding elapsed time.
+
+Tool pressure distinguishes durable state changes from observation:
+
+- File edits (`apply_patch`, `Edit`, `Write`, `NotebookEdit`) use edited input size rather than echoed output.
+- Reads, searches, tests, commands, agents, and read-only MCP tools use model-visible result size.
+- Size bonuses use six capped tiers: 5k, 20k, 60k, 120k, 250k, and 500k characters. Pressure additions are respectively `+0.5`, `+1`, `+3`, `+5`, `+10`, and `+20`; content beyond 500k receives no further size pressure.
+- The same tiers add weighted effective-tool values equal to 80% of the pressure bonus: `+0.4`, `+0.8`, `+2.4`, `+4`, `+8`, and `+16`. This applies to both edited input and model-visible read/output size. The 500k size tier therefore reaches a configured 16-tool hard threshold by itself once the active-time requirement is also satisfied.
+- Lightweight inspection commands, small reads, and native transient planning tools do not count as weighted meaningful tools by default. Tests, builds, edits, external side effects, large results, and failures do.
+- Claude Code failures are counted through `PostToolUseFailure`; Codex non-zero Bash results remain counted through `PostToolUse`.
 
 ## Turn-end checkpoint
 

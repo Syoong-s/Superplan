@@ -1,44 +1,30 @@
 # Changelog
 
-## Unreleased
+## 1.6.0
 
-### Fixed
-- Bound Agent-issued plain `checkpoint` commands to their actual host turn during `PostToolUse`.
-- Made `Stop` silently accept a same-turn manual checkpoint only when no substantive tool call followed it, preventing false continuation prompts and duplicate final summaries while preserving stale-checkpoint enforcement.
+- Moved every user-adjustable checkpoint, active-time, semantic-hint, recovery, base tool-weight, failure-weight, and size-tier parameter into one configuration section at the beginning of `superplan.py`.
+- Replaced separate derived size tables with one explicit `(chars, pressure, effective-tool)` table, making both additions independently editable.
+- Removed hard-coded scoring values from `score_tool_event()` and routed all tool categories through named top-level weight constants.
+- Kept all existing environment-variable overrides and v1.5.0 scoring behavior unchanged by default.
 
-### Changed
-- Clarified model guidance that active lifecycle hooks record planning-file edits automatically and that the plain `checkpoint` command is only a hookless fallback.
-- Added focused standard-library regression coverage for changed, current-turn manual, previous-turn manual, post-checkpoint work, and one-continuation Stop behavior.
+## 1.5.0
 
-## 1.0.0
+- Increased size-based weighted effective-tool values to 80% of the matching pressure bonus: `0.4/0.8/2.4/4/8/16`.
+- Made the 500k tier contribute `+16` effective-tool weight, guaranteeing that it reaches a configured 16-tool threshold once the active-time gate is satisfied.
+- Retained the user-selected pressure curve `0.5/1/3/5/10/20` and the 500k cap.
 
-First public release. Superplan now runs in **both Codex and Claude Code** as a single, shared plugin.
+## 1.4.0
 
-### Added
-- **Dual-host support**: one plugin directory installs into Codex (`.codex-plugin/`) and Claude Code (`.claude-plugin/`) simultaneously.
-- **Claude Code manifest** (`.claude-plugin/plugin.json`) and **marketplace catalogs** for both hosts (`.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`).
-- **`PostCompact` lifecycle hook**: restores the checkpoint after compaction on Claude Code, mirroring Codex's `SessionStart(source=compact)`. A per-cycle guard (`compact_restore_emitted`) prevents duplicate restore context when both events fire.
-- Shared `hooks/hooks.json` now resolves the controller via `${CLAUDE_PLUGIN_ROOT}${PLUGIN_ROOT}` so a single command works under both runtimes, and adds `fork` to the `SessionStart` matcher.
-- Host-neutral `SKILL.md` controller resolution: checks `PLUGIN_ROOT` (Codex), `CLAUDE_PLUGIN_ROOT` (Claude Code), and searches both `~/.codex` and `~/.claude`.
-- Bilingual README (English + 简体中文) with install tutorials for both hosts.
-- GitHub Actions release workflow that publishes the whole plugin directory with each tagged release.
-- MIT license.
+- Replaced the 500k size-pressure curve with user-selected bonuses: `0.5/1/3/5/10/20`.
+- Added proportional weighted meaningful-tool bonuses at one fifth of pressure: `0.1/0.2/0.6/1/2/4`.
+- Applied weighted size bonuses to both edit input and read/search/run output, capped at 500k.
+- Stored weighted meaningful-tool totals as decimals while retaining the existing integer threshold configuration.
 
-### Changed
-- Plugin version reset to `1.0.0` for the inaugural public, dual-host release.
-- Hook command help text and user-facing messages made host-neutral (no longer Codex-only wording).
+## 1.3.0
 
-### Pre-release history (local-only, Codex-only)
-
-## 2.1.1
-
-- Internal packaging refresh of the Codex-only plugin.
-
-## 2.1.0
-
-- Added sparse adaptive `PostToolUse` mid-turn checkpoint requests.
-- Added bounded pre-compaction transcript-tail capture with byte and line limits.
-- Added automatic `SessionStart(source=compact)` reconciliation instructions.
-- Added `checkpoint --reconciled` for no-change or completed reconciliation acknowledgement.
-- Added Linux file locking for concurrent hook-state updates.
-- Added parent-directory active-plan resolution for hooks running from workspace subdirectories.
+- Reworked pressure scoring across Codex and Claude Code tool names.
+- Added separate edit-input and read/output size weighting through a capped 500k tier.
+- Reduced pressure from lightweight reads, inspection-only shell commands, and native transient planning tools.
+- Distinguished read-only and state-changing MCP/local tools by action verbs.
+- Added Claude Code `PostToolUseFailure` accounting without exposing the unsupported event to Codex.
+- Expanded structured and textual failure detection.

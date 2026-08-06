@@ -18,6 +18,111 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
+# =============================================================================
+# USER-TUNABLE CONFIGURATION
+# =============================================================================
+# Edit values in this section to tune checkpoint cadence and tool scoring.
+# Environment variables with matching names still override the checkpoint,
+# active-time, semantic-hint, and recovery defaults at runtime.
+
+# --- Hard mid-turn checkpoint thresholds ------------------------------------
+DEFAULT_MIDTURN_MIN_SECONDS = 600          # Minimum accumulated active time.
+DEFAULT_MIDTURN_MAX_SECONDS = 1800          # Longest active interval before fallback.
+DEFAULT_MIDTURN_MIN_TOOLS = 8                # Raw tool-call gate for pressure trigger.
+DEFAULT_MIDTURN_PRESSURE = 30.0              # Pressure hard threshold.
+DEFAULT_MIDTURN_MEANINGFUL_EVENTS = 24       # Weighted effective-tool hard threshold.
+DEFAULT_MIDTURN_OUTPUT_CHARS = 300_000       # Cumulative model-visible tool output.
+DEFAULT_MIDTURN_TRANSCRIPT_BYTES = 1_310_720 # Transcript growth since checkpoint.
+DEFAULT_MIDTURN_REPROMPT_TOOLS = 5           # Tools between repeated hard reminders.
+
+# --- Active-time accounting --------------------------------------------------
+DEFAULT_ACTIVE_GAP_CAP_SECONDS = 300         # Max active seconds credited per tool gap.
+
+# --- Optional semantic checkpoint hints -------------------------------------
+DEFAULT_SEMANTIC_HINT_MIN_RATIO = 0.34       # First hint at this pressure fraction.
+DEFAULT_SEMANTIC_HINT_HIGH_RATIO = 0.67      # Stronger hint at this fraction.
+DEFAULT_SEMANTIC_HINT_MIN_TOOLS = 4          # Minimum substantive tool calls before hint.
+
+# --- Compaction recovery limits ---------------------------------------------
+DEFAULT_TAIL_MAX_BYTES = 524_288
+DEFAULT_TAIL_MAX_LINES = 80
+DEFAULT_TAIL_SCAN_BYTES = 2_097_152
+MAX_FILE_CHARS = 6_000                       # Max restored chars per planning file.
+
+# --- Size-dependent additions ------------------------------------------------
+# Each tuple is: (minimum chars, pressure addition, effective-tool addition).
+# The highest reached tier is used; values are capped at the final 500k tier.
+# Editing tools use edited INPUT size. Read/search/run tools use visible OUTPUT size.
+SIZE_WEIGHT_TIERS: tuple[tuple[int, float, float], ...] = (
+    (5_000,   0.5,  0.3),
+    (20_000,  2.0,  1.0),
+    (60_000,  4.0,  3.0),
+    (120_000, 8.0,  6.0),
+    (250_000, 15.0, 12.0),
+    (500_000, 30.0, 24.0),
+)
+
+# --- Base pressure / effective-tool weights ---------------------------------
+# Values are (pressure, effective-tool weight). Edit tools additionally receive
+# a size-tier addition based on their input payload.
+EDIT_TOOL_WEIGHTS: dict[str, tuple[float, float]] = {
+    "apply_patch": (3.5, 1.0),
+    "edit": (3.0, 1.0),
+    "write": (3.5, 1.0),
+    "notebookedit": (3.0, 1.0),
+    "multiedit": (3.5, 1.0),
+}
+
+# Bash category weights. All categories receive output-size additions.
+BASH_CATEGORY_WEIGHTS: dict[str, tuple[float, float]] = {
+    "state-change": (3.5, 1.0),
+    "run": (2.5, 1.0),
+    "read": (0.5, 0.0),
+    "generic": (1.0, 0.0),
+}
+
+READ_TOOL_WEIGHT = (0.5, 0.0)
+AGENT_TOOL_WEIGHT = (2.0, 1.0)
+NATIVE_PLANNING_TOOL_WEIGHT = (0.5, 0.0)
+MCP_WRITE_WEIGHT = (3.5, 1.0)
+MCP_READ_WEIGHT = (0.75, 0.0)
+MCP_UNKNOWN_WEIGHT = (1.5, 0.0)
+GENERIC_WRITE_WEIGHT = (3.5, 1.0)
+GENERIC_READ_WEIGHT = (0.75, 0.0)
+GENERIC_UNKNOWN_WEIGHT = (1.0, 0.0)
+
+# Unknown tools gain this effective-tool weight when their input/output is at
+# least the configured size, before normal size-tier additions are applied.
+UNKNOWN_EFFECTIVE_MIN_CHARS = 2_000
+UNKNOWN_EFFECTIVE_TOOL_BONUS = 1.0
+
+# Confirmed failures add both pressure and effective-tool weight.
+FAILURE_PRESSURE_BONUS = 2.5
+FAILURE_EFFECTIVE_TOOL_BONUS = 1.0
+FAILURE_SAMPLE_MAX_CHARS = 30_000
+
+# --- Tool classification -----------------------------------------------------
+# Adjust these sets when a host uses different tool names.
+READ_TOOL_NAMES = {
+    "read", "grep", "glob", "ls", "search", "webfetch", "websearch",
+}
+AGENT_TOOL_NAMES = {"agent", "task", "spawn_agent", "subagent"}
+NATIVE_PLANNING_TOOL_NAMES = {
+    "update_plan", "todowrite", "taskcreate", "taskupdate", "tasklist", "taskget",
+}
+READ_ACTION_WORDS = {
+    "read", "get", "list", "search", "find", "fetch", "query", "inspect",
+    "status", "show", "view", "lookup", "download", "open", "check",
+}
+WRITE_ACTION_WORDS = {
+    "write", "create", "update", "delete", "remove", "send", "post", "merge",
+    "commit", "push", "archive", "move", "rename", "upload", "modify", "edit",
+    "patch", "set", "add", "reply", "forward", "trash", "restore", "cancel",
+}
+
+# =============================================================================
+# INTERNAL FILE / STATE CONSTANTS
+# =============================================================================
 PLANNING_FILES = ("task_plan.md", "findings.md", "progress.md")
 REQUIRED_CHECKPOINT_FILES = {"task_plan.md", "progress.md"}
 STATE_FILE = ".superplan.json"
@@ -27,26 +132,6 @@ RECOVERY_DIR = "recovery"
 TAIL_FILE = "precompact-tail.txt"
 TAIL_META_FILE = "precompact-tail.json"
 PLAN_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
-MAX_FILE_CHARS = 6000
-
-# Defaults intentionally favor sparse semantic checkpoints. Every value can be
-# overridden for testing or local tuning through the matching environment key.
-DEFAULT_MIDTURN_MIN_SECONDS = 600
-DEFAULT_MIDTURN_MAX_SECONDS = 1800
-DEFAULT_MIDTURN_MIN_TOOLS = 8
-DEFAULT_MIDTURN_PRESSURE = 30.0
-DEFAULT_MIDTURN_MEANINGFUL_EVENTS = 16
-DEFAULT_MIDTURN_OUTPUT_CHARS = 400_000
-DEFAULT_MIDTURN_TRANSCRIPT_BYTES = 1_310_720
-DEFAULT_MIDTURN_REPROMPT_TOOLS = 5
-DEFAULT_ACTIVE_GAP_CAP_SECONDS = 300
-DEFAULT_SEMANTIC_HINT_MIN_RATIO = 0.34
-DEFAULT_SEMANTIC_HINT_HIGH_RATIO = 0.67
-DEFAULT_SEMANTIC_HINT_MIN_TOOLS = 4
-DEFAULT_TAIL_MAX_BYTES = 524_288
-DEFAULT_TAIL_MAX_LINES = 80
-DEFAULT_TAIL_SCAN_BYTES = 2_097_152
-
 
 # ---------------------------------------------------------------------------
 # Generic helpers
@@ -278,7 +363,7 @@ def fresh_adaptive_state(transcript_path: Any = None) -> dict[str, Any]:
         "last_tool_event_at": None,
         "pressure_score": 0.0,
         "tool_calls": 0,
-        "meaningful_events": 0,
+        "meaningful_events": 0.0,
         "output_chars": 0,
         "pending": False,
         "pending_reason": None,
@@ -298,7 +383,7 @@ def fresh_adaptive_state(transcript_path: Any = None) -> dict[str, Any]:
 # Method: Fill schema defaults without discarding forward-compatible fields
 # ==========================================
 def normalize_state(state: dict[str, Any]) -> dict[str, Any]:
-    state["schema_version"] = 5
+    state["schema_version"] = 7
     state.setdefault("last_checkpoint_origin", None)
     state.setdefault("manual_checkpoint_required_files_changed", False)
     state.setdefault("compact_restore_emitted", False)
@@ -405,7 +490,7 @@ def initialize_plan(root: Path, title: str) -> Path:
         atomic_write_text(plan_dir / name, render_template(name, title))
 
     state: dict[str, Any] = {
-        "schema_version": 5,
+        "schema_version": 7,
         "plan_id": plan_id,
         "status": "active",
         "session_id": None,
@@ -673,53 +758,228 @@ def is_superplan_checkpoint_command(command: str) -> bool:
     return "superplan.py" in lowered and re.search(r"(?:^|\s)checkpoint(?:\s|$)", lowered) is not None
 
 
-def score_tool_event(payload: dict[str, Any]) -> tuple[float, int, int]:
+# Tool scoring helpers use the user-tunable constants declared above.
+
+def size_pressure_bonus(chars: int) -> float:
+    """Return the configured pressure addition for the highest reached size tier."""
+    bonus = 0.0
+    for threshold, pressure_bonus, _ in SIZE_WEIGHT_TIERS:
+        if chars < threshold:
+            break
+        bonus = pressure_bonus
+    return bonus
+
+
+def size_meaningful_bonus(chars: int) -> float:
+    """Return configured effective-tool addition for the highest reached size tier."""
+    bonus = 0.0
+    for threshold, _, effective_bonus in SIZE_WEIGHT_TIERS:
+        if chars < threshold:
+            break
+        bonus = effective_bonus
+    return round(bonus, 2)
+
+
+def string_field_chars(value: Any, keys: set[str]) -> int:
+    """Recursively count string content stored under selected input keys."""
+    if isinstance(value, dict):
+        total = 0
+        for key, child in value.items():
+            lowered = str(key).lower()
+            if lowered in keys:
+                total += json_char_count(child)
+            elif isinstance(child, (dict, list, tuple)):
+                total += string_field_chars(child, keys)
+        return total
+    if isinstance(value, (list, tuple)):
+        return sum(string_field_chars(child, keys) for child in value)
+    return 0
+
+
+def edit_input_chars(payload: dict[str, Any], tool_name_lower: str) -> int:
+    """Estimate actual edited material rather than paths and metadata."""
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return json_char_count(tool_input)
+
+    if tool_name_lower == "apply_patch":
+        command = tool_input.get("command")
+        return len(command) if isinstance(command, str) else json_char_count(tool_input)
+
+    if tool_name_lower == "edit":
+        old_value = tool_input.get("old_string")
+        new_value = tool_input.get("new_string")
+        old_chars = len(old_value) if isinstance(old_value, str) else 0
+        new_chars = len(new_value) if isinstance(new_value, str) else 0
+        # Edit inputs often contain both before and after text. The larger side
+        # better approximates the edited region without mechanically doubling it.
+        return max(old_chars, new_chars, 1)
+
+    content_keys = {
+        "content", "contents", "text", "new_text", "new_source", "source",
+        "patch", "diff", "replacement", "body", "message", "data", "value",
+    }
+    counted = string_field_chars(tool_input, content_keys)
+    return counted if counted > 0 else json_char_count(tool_input)
+
+
+def action_words(tool_name_lower: str) -> set[str]:
+    return {word for word in re.split(r"[^a-z0-9]+", tool_name_lower) if word}
+
+
+def classify_named_action(tool_name_lower: str) -> str:
+    """Classify MCP and generic local tools by action verbs in their names."""
+    words = action_words(tool_name_lower)
+    if words & WRITE_ACTION_WORDS:
+        return "write"
+    if words & READ_ACTION_WORDS:
+        return "read"
+    return "unknown"
+
+
+def bash_category(command: str) -> str:
+    lowered = command.lower().strip()
+    if re.search(
+        r"(?:^|[;&|]\s*|\bsudo\s+)(?:rm|mv|cp|install|mkdir|touch|chmod|chown|ln|truncate|dd)\b"
+        r"|\bgit\s+(?:commit|reset|merge|rebase|push|cherry-pick|tag|clean)\b"
+        r"|\b(?:sed\s+-i|perl\s+-pi|sbatch|pip\s+install|conda\s+install|npm\s+install|pnpm\s+install|yarn\s+add)\b"
+        r"|(?:^|[^<])>>?\s*[^&]",
+        lowered,
+    ):
+        return "state-change"
+    if re.search(
+        r"\b(pytest|ctest|cargo\s+test|npm\s+test|pnpm\s+test|yarn\s+test|make|ninja|cmake|gcc|g\+\+|clang|mpirun|srun)\b"
+        r"|\bpython\d*\s+[^|;&]+\.py\b"
+        r"|\b(?:bash|sh|node|ruby|perl)\s+[^|;&]+",
+        lowered,
+    ):
+        return "run"
+    if re.match(
+        r"^(?:sudo\s+)?(?:pwd|ls|find|grep|rg|cat|head|tail|awk|wc|stat|file|du|df|which|type|env|printenv)\b"
+        r"|^git\s+(?:status|diff|log|show|branch|remote)\b"
+        r"|^sed\s+-n\b",
+        lowered,
+    ):
+        return "read"
+    return "generic"
+
+
+def structured_failure(payload: dict[str, Any]) -> bool:
+    if payload.get("hook_event_name") == "PostToolUseFailure":
+        return True
+    for key in ("success", "ok"):
+        if payload.get(key) is False:
+            return True
+    for key in ("is_error", "failed"):
+        if payload.get(key) is True:
+            return True
+    for key in ("exit_code", "returncode", "status_code"):
+        value = payload.get(key)
+        if isinstance(value, int) and value != 0:
+            return True
+    response = payload.get("tool_response")
+    if isinstance(response, dict):
+        for key in ("success", "ok"):
+            if response.get(key) is False:
+                return True
+        for key in ("is_error", "failed"):
+            if response.get(key) is True:
+                return True
+        for key in ("exit_code", "returncode", "status_code"):
+            value = response.get(key)
+            if isinstance(value, int) and value != 0:
+                return True
+        if response.get("error") not in (None, "", False):
+            return True
+    return False
+
+
+def failure_sample(payload: dict[str, Any]) -> str:
+    values = [payload.get("error"), payload.get("tool_response")]
+    try:
+        return "\n".join(
+            json.dumps(value, ensure_ascii=False, default=str) for value in values if value is not None
+        )[-FAILURE_SAMPLE_MAX_CHARS:].lower()
+    except (TypeError, ValueError, RecursionError):
+        return "\n".join(str(value) for value in values if value is not None)[-FAILURE_SAMPLE_MAX_CHARS:].lower()
+
+
+def tool_failed(payload: dict[str, Any]) -> bool:
+    if structured_failure(payload):
+        return True
+    sample = failure_sample(payload)
+    return re.search(
+        r"(?:\btraceback\b|\bexception\b|\bfatal(?: error)?\b|segmentation fault|"
+        r"assertion failed|command failed|tests? failed|(?:^|\n)\s*failed\b|"
+        r"\b[1-9][0-9]*\s+failed\b|\bfailed to\b|\bfailure\b|\berror:|"
+        r"exit code [1-9][0-9]*|returncode[^0-9]*[1-9][0-9]*)",
+        sample,
+    ) is not None
+
+
+def score_tool_event(payload: dict[str, Any]) -> tuple[float, float, int]:
     tool_name = payload.get("tool_name") if isinstance(payload.get("tool_name"), str) else ""
+    tool_name_lower = tool_name.lower()
     command = tool_command(payload)
-    response_chars = json_char_count(payload.get("tool_response"))
+    response_source = payload.get("tool_response")
+    if payload.get("hook_event_name") == "PostToolUseFailure" and response_source is None:
+        response_source = payload.get("error")
+    response_chars = json_char_count(response_source)
 
     if is_superplan_command(command):
-        return 0.0, 0, response_chars
+        return 0.0, 0.0, response_chars
 
-    if tool_name == "apply_patch":
-        pressure = 4.0
-        meaningful = 1
+    use_input_size = False
+    if tool_name_lower in EDIT_TOOL_WEIGHTS:
+        pressure, meaningful = EDIT_TOOL_WEIGHTS[tool_name_lower]
+        use_input_size = True
     elif tool_name == "Bash":
-        pressure = 1.5
-        meaningful = 1
-        lowered = command.lower()
-        if re.search(r"\b(pytest|ctest|cargo test|npm test|pnpm test|yarn test|make|ninja|cmake|gcc|g\+\+|mpirun|sbatch)\b", lowered):
-            pressure += 2.0
-        if re.search(r"\b(rm|mv|cp|install|git commit|git reset|sed\s+-i|python\d*\s+[^|;&]+\.py)\b", lowered):
-            pressure += 1.5
-    elif tool_name.startswith("mcp__"):
-        pressure = 1.5
-        meaningful = 1
+        pressure, meaningful = BASH_CATEGORY_WEIGHTS[bash_category(command)]
+    elif tool_name_lower in READ_TOOL_NAMES:
+        pressure, meaningful = READ_TOOL_WEIGHT
+    elif tool_name_lower in AGENT_TOOL_NAMES:
+        pressure, meaningful = AGENT_TOOL_WEIGHT
+    elif tool_name_lower in NATIVE_PLANNING_TOOL_NAMES:
+        # Native/transient planning is encouraged during work and should not
+        # resemble a durable repository edit in checkpoint pressure.
+        pressure, meaningful = NATIVE_PLANNING_TOOL_WEIGHT
+    elif tool_name_lower.startswith("mcp__"):
+        action = classify_named_action(tool_name_lower)
+        if action == "write":
+            pressure, meaningful = MCP_WRITE_WEIGHT
+            use_input_size = True
+        elif action == "read":
+            pressure, meaningful = MCP_READ_WEIGHT
+        else:
+            pressure, meaningful = MCP_UNKNOWN_WEIGHT
+            observed_chars = max(json_char_count(payload.get("tool_input")), response_chars)
+            if observed_chars >= UNKNOWN_EFFECTIVE_MIN_CHARS:
+                meaningful += UNKNOWN_EFFECTIVE_TOOL_BONUS
     else:
-        pressure = 1.0
-        meaningful = 1 if response_chars >= 2000 else 0
+        action = classify_named_action(tool_name_lower)
+        if action == "write":
+            pressure, meaningful = GENERIC_WRITE_WEIGHT
+            use_input_size = True
+        elif action == "read":
+            pressure, meaningful = GENERIC_READ_WEIGHT
+        else:
+            pressure, meaningful = GENERIC_UNKNOWN_WEIGHT
+            if response_chars >= UNKNOWN_EFFECTIVE_MIN_CHARS:
+                meaningful += UNKNOWN_EFFECTIVE_TOOL_BONUS
 
-    if response_chars >= 60_000:
-        pressure += 6.0
-        meaningful += 2
-    elif response_chars >= 20_000:
-        pressure += 3.0
-        meaningful += 1
-    elif response_chars >= 5_000:
-        pressure += 1.0
+    if use_input_size:
+        edited_chars = edit_input_chars(payload, tool_name_lower)
+        pressure += size_pressure_bonus(edited_chars)
+        meaningful += size_meaningful_bonus(edited_chars)
+    else:
+        pressure += size_pressure_bonus(response_chars)
+        meaningful += size_meaningful_bonus(response_chars)
 
-    response_text = ""
-    try:
-        response_text = json.dumps(payload.get("tool_response"), ensure_ascii=False, default=str)
-    except (TypeError, ValueError, RecursionError):
-        response_text = str(payload.get("tool_response"))
-    sample = response_text[-20_000:].lower()
-    if re.search(r"\b(traceback|exception|fatal error|command failed|tests? failed)\b", sample):
-        pressure += 2.0
-        meaningful += 1
+    if tool_failed(payload):
+        pressure += FAILURE_PRESSURE_BONUS
+        meaningful += FAILURE_EFFECTIVE_TOOL_BONUS
 
-    return pressure, meaningful, response_chars
-
+    return round(pressure, 2), round(float(meaningful), 2), response_chars
 
 def checkpoint_due(state: dict[str, Any], payload: dict[str, Any]) -> tuple[bool, str]:
     adaptive = state["adaptive"]
@@ -767,7 +1027,7 @@ def checkpoint_due(state: dict[str, Any], payload: dict[str, Any]) -> tuple[bool
 
     active_seconds = float(adaptive.get("active_seconds") or 0.0)
     tools = int(adaptive.get("tool_calls") or 0)
-    meaningful = int(adaptive.get("meaningful_events") or 0)
+    meaningful = float(adaptive.get("meaningful_events") or 0.0)
     pressure = float(adaptive.get("pressure_score") or 0.0)
     output_chars = int(adaptive.get("output_chars") or 0)
 
@@ -778,7 +1038,7 @@ def checkpoint_due(state: dict[str, Any], payload: dict[str, Any]) -> tuple[bool
     if active_seconds >= min_seconds and tools >= min_tools and pressure >= pressure_limit:
         return True, f"adaptive pressure reached {pressure:.1f} after {int(active_seconds)} active seconds"
     if active_seconds >= min_seconds and meaningful >= meaningful_limit:
-        return True, f"{meaningful} meaningful tool events accumulated over {int(active_seconds)} active seconds"
+        return True, f"{meaningful:.1f} weighted meaningful tools accumulated over {int(active_seconds)} active seconds"
     if active_seconds >= max_seconds and meaningful >= 3:
         return True, f"{int(active_seconds)} active seconds elapsed with unsaved progress"
     return False, ""
@@ -831,7 +1091,7 @@ def semantic_checkpoint_prompt(
 
 def semantic_hint_due(
     state: dict[str, Any],
-    event_meaningful: int,
+    event_meaningful: float,
 ) -> tuple[int, float, float]:
     adaptive = state["adaptive"]
     pressure = float(adaptive.get("pressure_score") or 0.0)
@@ -934,6 +1194,9 @@ def maybe_accept_pending_checkpoint(
 # Method: Bind plain CLI checkpoints to their host turn without counting them as substantive work
 # ==========================================
 def post_tool_use_hook(plan_dir: Path, state: dict[str, Any], payload: dict[str, Any]) -> None:
+    event_name = payload.get("hook_event_name")
+    if event_name not in {"PostToolUse", "PostToolUseFailure"}:
+        event_name = "PostToolUse"
     bind_session(state, payload.get("session_id") if isinstance(payload.get("session_id"), str) else None)
 
     if maybe_accept_pending_checkpoint(plan_dir, state, payload):
@@ -976,7 +1239,7 @@ def post_tool_use_hook(plan_dir: Path, state: dict[str, Any], payload: dict[str,
             emit_hook_json(
                 {
                     "hookSpecificOutput": {
-                        "hookEventName": "PostToolUse",
+                        "hookEventName": event_name,
                         "additionalContext": checkpoint_prompt(
                             plan_dir,
                             "the earlier checkpoint request is still unresolved",
@@ -991,7 +1254,10 @@ def post_tool_use_hook(plan_dir: Path, state: dict[str, Any], payload: dict[str,
     pressure, meaningful, response_chars = score_tool_event(payload)
     adaptive["pressure_score"] = round(float(adaptive.get("pressure_score") or 0.0) + pressure, 2)
     adaptive["tool_calls"] = int(adaptive.get("tool_calls") or 0) + 1
-    adaptive["meaningful_events"] = int(adaptive.get("meaningful_events") or 0) + meaningful
+    adaptive["meaningful_events"] = round(
+        float(adaptive.get("meaningful_events") or 0.0) + meaningful,
+        2,
+    )
     adaptive["output_chars"] = int(adaptive.get("output_chars") or 0) + response_chars
 
     due, reason = checkpoint_due(state, payload)
@@ -1018,7 +1284,7 @@ def post_tool_use_hook(plan_dir: Path, state: dict[str, Any], payload: dict[str,
         emit_hook_json(
             {
                 "hookSpecificOutput": {
-                    "hookEventName": "PostToolUse",
+                    "hookEventName": event_name,
                     "additionalContext": checkpoint_prompt(plan_dir, reason),
                 }
             }
@@ -1027,7 +1293,7 @@ def post_tool_use_hook(plan_dir: Path, state: dict[str, Any], payload: dict[str,
         emit_hook_json(
             {
                 "hookSpecificOutput": {
-                    "hookEventName": "PostToolUse",
+                    "hookEventName": event_name,
                     "additionalContext": semantic_checkpoint_prompt(
                         plan_dir,
                         semantic_pressure,
@@ -1307,7 +1573,7 @@ def handle_hook(payload: dict[str, Any]) -> None:
         event = payload.get("hook_event_name")
         if event == "SessionStart":
             session_start_hook(plan_dir, state, payload)
-        elif event == "PostToolUse":
+        elif event in {"PostToolUse", "PostToolUseFailure"}:
             post_tool_use_hook(plan_dir, state, payload)
         elif event == "PreCompact":
             precompact_hook(plan_dir, state, payload)
@@ -1386,8 +1652,8 @@ def show_status(root: Path) -> int:
     )
     print(f"Tools since checkpoint: {int(adaptive.get('tool_calls') or 0)} / {min_tools}")
     print(
-        f"Meaningful events since checkpoint: {int(adaptive.get('meaningful_events') or 0)} "
-        f"/ {meaningful_limit}"
+        f"Weighted meaningful tools since checkpoint: "
+        f"{float(adaptive.get('meaningful_events') or 0.0):.1f} / {meaningful_limit}"
     )
     print(
         f"Output characters since checkpoint: {int(adaptive.get('output_chars') or 0)} "

@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/skills/superplan/scripts/superplan.py\" hook",
+            "timeout": 10,
+            "statusMessage": "Recording Superplan tool failure pressure",
+            "additionalContextLimit": 1600
+          }
+        ]
+      }
+    ]
+  }
+}
