@@ -1,5 +1,5 @@
 {
-  "description": "Restore, checkpoint, and reconcile explicitly activated Superplan tasks on Codex and Claude Code (Linux/WSL).",
+  "description": "Restore, pressure-gate semantic checkpoints, and reconcile explicitly activated Superplan tasks on Codex and Claude Code (Linux/WSL).",
   "hooks": {
     "SessionStart": [
       {

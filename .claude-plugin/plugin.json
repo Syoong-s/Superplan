@@ -1,7 +1,7 @@
 {
   "name": "superplan",
-  "description": "Adaptive checkpoint-and-restore planning with bounded compaction recovery for Codex and Claude Code. Persists AI-authored task plans, findings, and progress across compaction and later sessions.",
-  "version": "1.0.0",
+  "description": "Pressure-gated semantic checkpoint-and-restore planning with bounded compaction recovery for Codex and Claude Code. Persists AI-authored task plans, findings, and progress across compaction and later sessions.",
+  "version": "1.2.0",
   "author": {
     "name": "Syoong-s",
     "url": "https://github.com/Syoong-s"

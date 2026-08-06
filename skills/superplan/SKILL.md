@@ -87,9 +87,29 @@ Keep transient task state in the current context or the host's native planning f
 
 The `PostToolUse` hook maintains only compact machine-owned counters in `.superplan.json`. It estimates checkpoint pressure from elapsed time, tool activity, output volume, and transcript growth. It does not claim to know the exact context-window percentage.
 
-## Adaptive mid-turn checkpoint
+## Pressure-gated semantic checkpoints
 
-When accumulated work becomes substantial, `PostToolUse` injects one non-blocking checkpoint request into the current turn. At that point, before the next substantive operation:
+The agent may also choose to checkpoint at a durable semantic boundary, but this choice is gated by `PostToolUse` pressure rather than being available after every tool call. Pressure is accumulated from capped active time between substantive tool calls, tool activity, output volume, and transcript growth.
+
+- At low pressure, strongly prefer no planning-file update. Do not checkpoint routine progress.
+- Once pressure reaches a moderate band, `PostToolUse` may inject one optional semantic checkpoint opportunity. Update only if the immediately preceding work produced a critical finding or constraint, a major plan change, a verified milestone or task stage completion, or a significant failure that changes the next steps.
+- At a higher pressure band, a second optional opportunity may be injected if the first was skipped. The higher band should lower the threshold for preserving a useful handoff, but still does not justify per-action logging.
+- If no optional opportunity was injected, checkpoint early only for an exceptional discovery that invalidates the current plan or makes the existing checkpoint materially misleading.
+- When an optional update is made, rewrite `task_plan.md` and `progress.md` together in one coherent edit; update `findings.md` only when durable facts, constraints, decisions, evidence, or references changed. The next `PostToolUse` accepts the voluntary checkpoint and resets pressure automatically.
+
+The semantic hint bands are relative to `SUPERPLAN_CHECKPOINT_PRESSURE` and can be tuned through:
+
+```text
+SUPERPLAN_SEMANTIC_HINT_MIN_RATIO
+SUPERPLAN_SEMANTIC_HINT_HIGH_RATIO
+SUPERPLAN_SEMANTIC_HINT_MIN_TOOLS
+```
+
+Defaults are tuned for a 300k-context workflow: the moderate opportunity begins at 55% of hard checkpoint pressure after at least four substantive tools, and the high opportunity begins at 82%. At most one prompt is emitted per band before the next accepted checkpoint.
+
+## Adaptive mandatory mid-turn checkpoint
+
+When accumulated work becomes substantial enough to cross a hard boundary, `PostToolUse` injects one non-blocking required checkpoint request into the current turn. At that point, before the next substantive operation:
 
 - Rewrite `task_plan.md` with current state and remaining work.
 - Update `progress.md` with completed actions, changed artifacts, verification evidence, failures, unresolved problems, and an exact resume point.
@@ -109,7 +129,24 @@ SUPERPLAN_CHECKPOINT_MEANINGFUL_EVENTS
 SUPERPLAN_CHECKPOINT_OUTPUT_CHARS
 SUPERPLAN_CHECKPOINT_TRANSCRIPT_BYTES
 SUPERPLAN_CHECKPOINT_REPROMPT_TOOLS
+SUPERPLAN_ACTIVE_GAP_CAP_SECONDS
 ```
+
+The built-in defaults are:
+
+```text
+minimum active time:       1200 seconds
+maximum active time:       3600 seconds
+minimum substantive tools: 8
+hard pressure:             24
+meaningful events:         12
+tool output:               240000 characters
+transcript growth:         1310720 bytes
+reprompt interval:         5 tools
+active gap cap:            300 seconds
+```
+
+Active time is not wall-clock time. On each substantive `PostToolUse`, Superplan adds the interval since the preceding substantive tool event, capped by `SUPERPLAN_ACTIVE_GAP_CAP_SECONDS`. Long idle periods, overnight pauses, and suspended sessions therefore cannot directly exhaust the maximum-time boundary. The first tool event after a checkpoint establishes the activity timestamp without adding elapsed time.
 
 ## Turn-end checkpoint
 
@@ -157,7 +194,7 @@ Then continue the original task without repeating verified work.
 ## Lifecycle behavior
 
 - `SessionStart` restores bounded copies of all three files on startup, resume, clear, and post-compaction continuation.
-- `PostToolUse` performs sparse adaptive mid-turn checkpoint requests and accepts completed updates.
+- `PostToolUse` exposes sparse pressure-gated semantic checkpoint opportunities, performs mandatory adaptive mid-turn checkpoint requests at hard boundaries, and accepts completed updates.
 - `PreCompact` saves a bounded transcript tail and recovery metadata; it does not fabricate a semantic summary.
 - `PostCompact` (Claude Code) restores the checkpoint after compaction, mirroring `SessionStart(source=compact)`; idempotent with it.
 - `Stop` accepts the AI-authored checkpoint or requests one continuation before ending the turn.

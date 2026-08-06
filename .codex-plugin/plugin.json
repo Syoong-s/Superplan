@@ -1,7 +1,7 @@
 {
   "name": "superplan",
-  "version": "1.0.0",
-  "description": "Linux adaptive checkpoint-and-restore planning with bounded compaction recovery for Codex and Claude Code.",
+  "version": "1.2.0",
+  "description": "Linux pressure-gated semantic checkpoint-and-restore planning with bounded compaction recovery for Codex and Claude Code.",
   "author": {
     "name": "Syoong-s",
     "url": "https://github.com/Syoong-s"
@@ -9,13 +9,14 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Superplan",
-    "shortDescription": "Adaptive persistent planning for Codex and Claude Code (Linux/WSL)",
-    "longDescription": "Persist AI-authored task plans, durable findings, and progress with sparse adaptive mid-turn checkpoints, bounded pre-compaction transcript recovery, and automatic post-compaction reconciliation. Works in both Codex and Claude Code.",
+    "shortDescription": "Pressure-gated persistent planning for Codex and Claude Code (Linux/WSL)",
+    "longDescription": "Persist AI-authored task plans, durable findings, and progress with pressure-gated semantic checkpoints, sparse mandatory mid-turn checkpoints, bounded pre-compaction transcript recovery, and automatic post-compaction reconciliation. Works in both Codex and Claude Code.",
     "developerName": "Syoong-s",
     "category": "Developer Tools",
     "capabilities": [
       "Persistent planning",
-      "Adaptive mid-turn checkpoints",
+      "Pressure-gated semantic checkpoints",
+      "Adaptive mandatory checkpoints",
       "Bounded compaction recovery",
       "Post-compaction reconciliation",
       "Dual-host (Codex + Claude Code)"
