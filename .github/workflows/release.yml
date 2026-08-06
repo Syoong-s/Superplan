@@ -35,40 +35,89 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Resolved tag=$TAG version=$VERSION"
 
-      - name: Validate manifests
+      - name: Validate manifests and run tests
         run: |
           python3 -c "import json,sys; json.load(open('.codex-plugin/plugin.json')); json.load(open('.claude-plugin/plugin.json')); json.load(open('.claude-plugin/marketplace.json')); json.load(open('.agents/plugins/marketplace.json')); print('All manifests valid JSON')"
           python3 -m py_compile skills/superplan/scripts/superplan.py && echo "Controller compiles"
           python3 -m unittest discover -s tests -v
 
-      - name: Package plugin directory
+      - name: Package plugin components
         run: |
           VERSION="${{ steps.ver.outputs.version }}"
           STAGE="superplan-plugin-${VERSION}"
-          mkdir -p "dist/${STAGE}"
-          # Ship the whole plugin directory, excluding dev/runtime/VCS files only.
-          rsync -a \
-            --exclude='.git' \
-            --exclude='.github' \
-            --exclude='.gitignore' \
-            --exclude='dist' \
-            --exclude='.planning' \
-            --exclude='.superplan.json' \
-            --exclude='.superplan.lock' \
-            --exclude='__pycache__' \
-            --exclude='*.pyc' \
-            --exclude='*.bak' \
-            --exclude='*.orig' \
-            ./ "dist/${STAGE}/"
-          # Sanity: both host manifests must be inside the package.
-          test -f "dist/${STAGE}/.codex-plugin/plugin.json"
-          test -f "dist/${STAGE}/.claude-plugin/plugin.json"
-          test -f "dist/${STAGE}/hooks/hooks.json"
-          test -f "dist/${STAGE}/skills/superplan/scripts/superplan.py"
+          DEST="dist/${STAGE}"
+          mkdir -p "$DEST"
+
+          # ---- Codex host components ----
+          mkdir -p "$DEST/.codex-plugin" "$DEST/.agents/plugins"
+          cp .codex-plugin/plugin.json           "$DEST/.codex-plugin/"
+          cp .agents/plugins/marketplace.json    "$DEST/.agents/plugins/"
+
+          # ---- Claude Code host components ----
+          mkdir -p "$DEST/.claude-plugin"
+          cp .claude-plugin/plugin.json          "$DEST/.claude-plugin/"
+          cp .claude-plugin/marketplace.json     "$DEST/.claude-plugin/"
+
+          # ---- Shared hooks ----
+          mkdir -p "$DEST/hooks"
+          cp hooks/hooks.json                    "$DEST/hooks/"
+          cp hooks/claude-failure-hooks.json     "$DEST/hooks/"
+
+          # ---- Skills (definition, agent config, controller, templates) ----
+          mkdir -p "$DEST/skills/superplan/agents" \
+                   "$DEST/skills/superplan/scripts" \
+                   "$DEST/skills/superplan/templates"
+          cp skills/superplan/SKILL.md              "$DEST/skills/superplan/"
+          cp skills/superplan/agents/openai.yaml   "$DEST/skills/superplan/agents/"
+          cp skills/superplan/scripts/superplan.py "$DEST/skills/superplan/scripts/"
+          cp skills/superplan/templates/findings.md \
+             skills/superplan/templates/progress.md \
+             skills/superplan/templates/task_plan.md \
+             "$DEST/skills/superplan/templates/"
+
+          # ---- Documentation ----
+          cp README.md README.zh-CN.md CHANGELOG.md LICENSE "$DEST/"
+
+          # ---- Verify all required files are present ----
+          for f in \
+            .codex-plugin/plugin.json \
+            .claude-plugin/plugin.json \
+            .claude-plugin/marketplace.json \
+            .agents/plugins/marketplace.json \
+            hooks/hooks.json \
+            hooks/claude-failure-hooks.json \
+            skills/superplan/SKILL.md \
+            skills/superplan/agents/openai.yaml \
+            skills/superplan/scripts/superplan.py \
+            skills/superplan/templates/findings.md \
+            skills/superplan/templates/progress.md \
+            skills/superplan/templates/task_plan.md \
+            README.md \
+            README.zh-CN.md \
+            CHANGELOG.md \
+            LICENSE; do
+            test -f "$DEST/$f" || { echo "ERROR: missing required file: $f"; exit 1; }
+          done
+
+          # ---- Verify no dev-only artifacts leaked in ----
+          for d in tests .github __pycache__ .planning; do
+            test ! -e "$DEST/$d" || { echo "ERROR: $d/ should not be in package"; exit 1; }
+          done
+          test ! -f "$DEST/.gitignore" || { echo "ERROR: .gitignore should not be in package"; exit 1; }
+          ! find "$DEST" -name '__pycache__' -o -name '*.pyc' | grep -q . \
+            || { echo "ERROR: Python cache files found"; exit 1; }
+
+          echo "All checks passed — package is clean."
+
+          # ---- Archive ----
           cd dist
           tar -czf "${STAGE}.tar.gz" "${STAGE}"
           zip -qr "${STAGE}.zip" "${STAGE}"
           sha256sum "${STAGE}.tar.gz" "${STAGE}.zip" > checksums-sha256.txt
+
+          echo "=== Package contents ==="
+          find "${STAGE}" -type f | sort
+          echo "=== Archives ==="
           ls -la
 
       - name: Extract release notes from CHANGELOG

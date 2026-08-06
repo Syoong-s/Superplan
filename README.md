@@ -54,15 +54,15 @@ codex plugin add superplan@superplan-plugin
 
    ```bash
    # persistent (auto-loads on next session):
-   cp -r superplan-plugin-1.0.0 ~/.claude/skills/superplan
+   cp -r superplan-plugin-<version> ~/.claude/skills/superplan
    # or test in a one-off session:
-   claude --plugin-dir ./superplan-plugin-1.0.0
+   claude --plugin-dir ./superplan-plugin-<version>
    ```
 
 3. **Codex** — add the extracted directory as a local marketplace and install:
 
    ```bash
-   codex plugin marketplace add /path/to/superplan-plugin-1.0.0
+   codex plugin marketplace add /path/to/superplan-plugin-<version>
    codex plugin add superplan@superplan-plugin
    ```
 
@@ -79,6 +79,38 @@ codex plugin add superplan@superplan-plugin
 ```
 
 After installing, **trust the plugin / hooks** when the host prompts you (both Codex and Claude Code require explicit trust for hook definitions), then start a fresh session.
+
+## 📦 Release package contents
+
+Each [release](https://github.com/Syoong-s/Superplan/releases) ships a `superplan-plugin-<version>.tar.gz` and `.zip` containing only the runtime plugin components:
+
+```
+superplan-plugin-<version>/
+├── .codex-plugin/
+│   └── plugin.json                 # Codex manifest
+├── .agents/plugins/
+│   └── marketplace.json            # Codex marketplace catalog
+├── .claude-plugin/
+│   ├── plugin.json                 # Claude Code manifest
+│   └── marketplace.json            # Claude Code marketplace catalog
+├── hooks/
+│   ├── hooks.json                  # Shared lifecycle hooks
+│   └── claude-failure-hooks.json   # Claude Code PostToolUseFailure hook
+├── skills/superplan/
+│   ├── SKILL.md                    # Skill definition
+│   ├── agents/openai.yaml          # Codex agent config
+│   ├── scripts/superplan.py        # Controller (pure stdlib, Python 3.9+)
+│   └── templates/
+│       ├── task_plan.md
+│       ├── findings.md
+│       └── progress.md
+├── README.md
+├── README.zh-CN.md
+├── CHANGELOG.md
+└── LICENSE
+```
+
+Development-only files (`.github/`, `tests/`, `.gitignore`) and runtime artifacts (`__pycache__/`, `.planning/`, `.superplan.json`) are excluded from the archive.
 
 ## 🚀 Usage
 

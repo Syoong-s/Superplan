@@ -54,15 +54,15 @@ codex plugin add superplan@superplan-plugin
 
    ```bash
    # 持久化（下次会话自动加载）：
-   cp -r superplan-plugin-1.0.0 ~/.claude/skills/superplan
+   cp -r superplan-plugin-<version> ~/.claude/skills/superplan
    # 或一次性测试：
-   claude --plugin-dir ./superplan-plugin-1.0.0
+   claude --plugin-dir ./superplan-plugin-<version>
    ```
 
 3. **Codex** —— 把解压目录作为本地 marketplace 添加并安装：
 
    ```bash
-   codex plugin marketplace add /path/to/superplan-plugin-1.0.0
+   codex plugin marketplace add /path/to/superplan-plugin-<version>
    codex plugin add superplan@superplan-plugin
    ```
 
@@ -79,6 +79,38 @@ codex plugin add superplan@superplan-plugin
 ```
 
 安装后，当宿主提示时**信任插件 / 钩子**（Codex 与 Claude Code 都要求对钩子定义显式信任），然后开启新会话。
+
+## 📦 发布包内容
+
+每次 [release](https://github.com/Syoong-s/Superplan/releases) 会发布 `superplan-plugin-<version>.tar.gz` 和 `.zip`，仅包含运行时所需的插件组件：
+
+```
+superplan-plugin-<version>/
+├── .codex-plugin/
+│   └── plugin.json                 # Codex 清单
+├── .agents/plugins/
+│   └── marketplace.json            # Codex marketplace 目录
+├── .claude-plugin/
+│   ├── plugin.json                 # Claude Code 清单
+│   └── marketplace.json            # Claude Code marketplace 目录
+├── hooks/
+│   ├── hooks.json                  # 共享生命周期钩子
+│   └── claude-failure-hooks.json   # Claude Code PostToolUseFailure 钩子
+├── skills/superplan/
+│   ├── SKILL.md                    # 技能定义
+│   ├── agents/openai.yaml          # Codex agent 配置
+│   ├── scripts/superplan.py        # 控制器（纯标准库，Python 3.9+）
+│   └── templates/
+│       ├── task_plan.md
+│       ├── findings.md
+│       └── progress.md
+├── README.md
+├── README.zh-CN.md
+├── CHANGELOG.md
+└── LICENSE
+```
+
+开发专用文件（`.github/`、`tests/`、`.gitignore`）和运行时产物（`__pycache__/`、`.planning/`、`.superplan.json`）均不包含在发布包中。
 
 ## 🚀 使用
 
