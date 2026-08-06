@@ -1,6 +1,6 @@
 {
   "name": "superplan",
-  "version": "1.6.0",
+  "version": "1.6.2",
   "description": "Linux pressure-gated semantic checkpoint-and-restore planning with bounded compaction recovery for Codex and Claude Code.",
   "author": {
     "name": "Syoong-s",
