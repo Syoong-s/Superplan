@@ -1,7 +1,7 @@
 {
   "name": "superplan",
-  "description": "Pressure-gated semantic checkpoint-and-restore planning with bounded compaction recovery for Codex and Claude Code. Persists AI-authored task plans, findings, and progress across compaction and later sessions.",
-  "version": "1.6.3",
+  "description": "Conversation-scoped persistent planning with a task-completion-gated current-task plan, cumulative detailed findings/progress, concurrent-session isolation, pressure-gated checkpoints, and bounded compaction recovery for Codex and Claude Code.",
+  "version": "1.7.1",
   "author": {
     "name": "Syoong-s",
     "url": "https://github.com/Syoong-s"

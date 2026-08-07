@@ -1,7 +1,7 @@
 {
   "name": "superplan",
-  "version": "1.6.3",
-  "description": "Linux pressure-gated semantic checkpoint-and-restore planning with bounded compaction recovery for Codex and Claude Code.",
+  "version": "1.7.1",
+  "description": "Conversation-scoped persistent planning with task-completion gating and pressure-gated checkpoints, cumulative detailed history, concurrent-session isolation, and bounded compaction recovery for Codex and Claude Code.",
   "author": {
     "name": "Syoong-s",
     "url": "https://github.com/Syoong-s"
@@ -9,12 +9,14 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Superplan",
-    "shortDescription": "Pressure-gated persistent planning for Codex and Claude Code (Linux/WSL)",
-    "longDescription": "Persist AI-authored task plans, durable findings, and progress with pressure-gated semantic checkpoints, sparse mandatory mid-turn checkpoints, bounded pre-compaction transcript recovery, and automatic post-compaction reconciliation. Works in both Codex and Claude Code.",
+    "shortDescription": "Conversation-scoped persistent planning for Codex and Claude Code (Linux/WSL)",
+    "longDescription": "Persist one conversation-scoped plan container with a task-completion-gated current-task plan, cumulative detailed findings/progress, pressure-gated checkpoints, concurrent session isolation, and bounded compaction recovery. Works in both Codex and Claude Code.",
     "developerName": "Syoong-s",
     "category": "Developer Tools",
     "capabilities": [
-      "Persistent planning",
+      "Conversation-scoped persistent planning",
+      "Concurrent session isolation",
+      "Cumulative detailed progress and findings",
       "Pressure-gated semantic checkpoints",
       "Adaptive mandatory checkpoints",
       "Bounded compaction recovery",
@@ -22,7 +24,7 @@
       "Dual-host (Codex + Claude Code)"
     ],
     "defaultPrompt": [
-      "Use $superplan to keep persistent planning files for this task."
+      "Use $superplan to keep one persistent plan container across later tasks in this conversation."
     ]
   }
 }

@@ -1,5 +1,5 @@
 {
-  "description": "Restore, pressure-gate semantic checkpoints, and reconcile explicitly activated Superplan tasks on Codex and Claude Code (Linux/WSL).",
+  "description": "Restore conversation-scoped Superplan containers, isolate concurrent sessions, pressure-gate semantic checkpoints, and reconcile compaction on Codex and Claude Code (Linux/WSL).",
   "hooks": {
     "SessionStart": [
       {
@@ -85,7 +85,7 @@
             "command": "python3 -B \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/skills/superplan/scripts/superplan.py\" hook",
             "timeout": 10,
             "additionalContextLimit": 1500,
-            "statusMessage": "Continuing active Superplan task"
+            "statusMessage": "Continuing active Superplan conversation plan"
           }
         ]
       }

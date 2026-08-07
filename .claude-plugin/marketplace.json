@@ -8,7 +8,7 @@
     {
       "name": "superplan",
       "source": ".",
-      "description": "Pressure-gated semantic checkpoint-and-restore planning with bounded compaction recovery for Codex and Claude Code."
+      "description": "Conversation-scoped persistent planning with cumulative detailed history, session isolation, and bounded compaction recovery for Codex and Claude Code."
     }
   ]
 }

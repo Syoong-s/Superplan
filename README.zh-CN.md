@@ -10,7 +10,7 @@
 
 > 📖 English: [README.md](README.md)
 
-Superplan 是**一个插件目录，可同时安装到 Codex 与 Claude Code**。它将 AI 编写的任务计划、持久化结论与进度跨上下文压缩 / 跨会话保存下来——而不是每次工具调用后都重写文件。
+Superplan 是**一个插件目录，可同时安装到 Codex 与 Claude Code**。它将一个“对话级”的持久计划容器跨上下文压缩和后续轮次保存下来：当前任务的 `task_plan.md` 受任务完成状态门控，只有前序任务正式完成后才可由新任务替换；`progress.md` / `findings.md` 会累计保留所有前序任务的详细内容，不允许为了缩短文件而压缩成摘要。
 
 Agent 在工作时继续使用**原生**规划能力；Superplan 只在生命周期边界（`SessionStart`、`PostToolUse`、`PreCompact`、`PostCompact`、`Stop`、`SessionEnd`、`UserPromptSubmit`）作为稀疏的检查点保存与恢复层触发。
 
@@ -19,6 +19,10 @@ Agent 在工作时继续使用**原生**规划能力；Superplan 只在生命周
 ## ✨ 功能特性
 
 - **双宿主** —— 一个插件目录，两套运行时。Codex 读取 `.codex-plugin/`，Claude Code 读取 `.claude-plugin/`；二者共享 `hooks/hooks.json`、`skills/` 与控制器脚本。
+- **对话级持续激活** —— 首次显式激活后，同一对话后续任务自动复用同一个 plan；单个任务完成不会关闭 plan。
+- **任务完成门控** —— 当前任务会一直保持 `active`，直到显式执行 `checkpoint --complete`；任务未完成时，后续请求不得覆盖 `task_plan.md`。完成标记会强制触发一次新的最终 `progress.md` 更新，之后任务状态才正式变为 `complete`。
+- **多对话并发隔离** —— `.planning/.bindings/<session-key>.plan` 为每个 Codex / Claude Code 对话单独路由，同一项目内多个对话不会再争用全局活动指针。
+- **详细历史累计保留** —— 只有前序任务已经正式完成，新任务才可以覆盖 `task_plan.md`；`progress.md` 和 `findings.md` 必须保留所有前序任务的详细内容，不能用 compact summary 替换。
 - **自适应中途检查点** —— `PostToolUse` 根据已用时间、工具活动、输出体量与转录增长估算检查点压力，仅当工作累积到一定程度时才请求一次稀疏语义检查点。
 - **有界压缩恢复** —— `PreCompact` 保存一段有界的、不可信的转录尾部；`PostCompact` / `SessionStart(source=compact)` 恢复它并请求一次对账。逐周期保护机制避免恢复上下文重复注入。
 - **轮末强制** —— `Stop` 校验 `task_plan.md` 与 `progress.md` 是否已刷新，最多请求一次续写（绝不死循环）。
@@ -114,40 +118,49 @@ superplan-plugin-<version>/
 
 ## 🚀 使用
 
-**显式**激活 Superplan——它不会仅因为任务很长就自动激活。在 Codex 中使用 `$superplan`；在 Claude Code 中调用 `/superplan:superplan` 技能（或直接要求持久化规划）。
+Superplan 只需要**首次显式激活**；它不会因为任务很长而自行激活。在 Codex 中使用 `$superplan`，在 Claude Code 中调用 `/superplan:superplan`（或直接要求持久化规划）。
 
-在工作区初始化一个检查点集合：
+为当前对话初始化一个长期存在的 plan 容器：
 
 ```bash
 python3 skills/superplan/scripts/superplan.py init "任务标题"
 ```
 
-这会在 `.planning/<日期>-<slug>/` 下创建一个隔离目录：
+目录结构：
 
 ```
-.planning/<日期>-<slug>/
-├── task_plan.md        # 当前计划 + 剩余工作
-├── findings.md         # 持久事实、约束、决策
-├── progress.md         # 交接：已完成、变更、证据、恢复点
-├── .superplan.json     # 机器拥有的钩子状态（计数器、哈希）
-└── recovery/           # 有界转录尾部，压缩时才创建
+.planning/
+├── .bindings/                    # 每个活动对话一个绑定文件
+└── <日期>-<slug>/
+    ├── task_plan.md              # 当前任务；仅在前序任务完成后才可整体替换
+    ├── findings.md               # 跨任务累计的详细发现
+    ├── progress.md               # 跨任务累计的详细进展
+    ├── .superplan.json           # 机器维护的 hook / session 状态
+    └── recovery/                 # 压缩时创建的有界转录尾部
 ```
 
-查看或管理活动计划：
+成功执行 `init` 后，`PostToolUse` 会把该 plan 绑定到发起命令的当前对话。新版完全没有 `.active_plan`，也不存在项目级全局活动指针。
+
+首次激活后，**同一对话**后续所有用户轮次都会自动复用同一个 plan。如果当前任务仍是 `active`，后续用户请求必须视为当前任务的继续或新增要求，只能在原有 `task_plan.md` 上继续修改，不能整体覆盖。只有前序任务已经正式标记为 `complete`，真正的新任务才允许整体替换 `task_plan.md`。`progress.md` 和 `findings.md` 中以前任务的详细内容必须原样保留并在其基础上增量修改，不得为了缩短文件而折叠、删除或压缩成 compact summary。
+
+显式管理命令：
 
 ```bash
-python3 skills/superplan/scripts/superplan.py status
-python3 skills/superplan/scripts/superplan.py checkpoint            # 钩子不可用时的手动兜底
-python3 skills/superplan/scripts/superplan.py checkpoint --reconciled  # 确认一次对账
-python3 skills/superplan/scripts/superplan.py checkpoint --complete     # 关闭活动计划
-python3 skills/superplan/scripts/superplan.py use <plan-id>          # 恢复另一个计划
+python3 skills/superplan/scripts/superplan.py status <plan-id>
+python3 skills/superplan/scripts/superplan.py use <plan-id>                 # 显式切换/转移 plan
+python3 skills/superplan/scripts/superplan.py deactivate <plan-id>          # 仅停用当前对话的 Superplan
+python3 skills/superplan/scripts/superplan.py checkpoint --plan-id <plan-id> # hooks 不可用时的手动兜底
+python3 skills/superplan/scripts/superplan.py checkpoint --plan-id <plan-id> --reconciled
+python3 skills/superplan/scripts/superplan.py checkpoint --plan-id <plan-id> --complete   # 标记“当前任务”完成
 ```
 
-工作时让 agent 正常操作即可。钩子只在工作累积较多时注入一次稀疏检查点请求，并在轮末前校验最终检查点。钩子已启用且受信任时，agent 应把批量更新规划文件作为最终回复前最后一个必要的文件操作，之后不得再运行普通 `checkpoint` 命令；`PostToolUse` 或 `Stop` 会自动记录哈希。普通命令只用于钩子禁用或未受信任时的手动兜底。
+不要因为当前任务完成就执行 `deactivate`。当前任务真正完成并验证后，执行 `checkpoint --complete`：控制器会先将任务置为 `completion_pending`，随后 hook 强制要求对 `progress.md` 再做一次新的最终语义更新；只有检测到这次更新后，任务状态才正式变成 `complete`。Superplan 本身始终保持活动，以便下一条用户请求继续使用同一个 plan。
 
-如果 agent 仍然调用了普通命令，Superplan 会把该检查点关联到当前宿主回合。只有在之后没有发生实质工具调用时，`Stop` 才会静默接受；上一回合的检查点，或检查点之后又产生的新工作，仍会被视为过期并请求一次续写。这样既避免多余的“钩子反馈”和重复最终总结，也不削弱过期检查点保护。
+工作过程中让 agent 正常操作即可。hooks 只在工作累积较多时注入稀疏检查点请求，并在轮末校验最终检查点。hooks 已启用且可信时，agent 应把批量规划文件更新作为最终回复前最后一个必要的文件操作，之后无需运行普通 `checkpoint`；`PostToolUse` 或 `Stop` 会自动记录哈希。如果 hooks 不可用，任务完成时先运行 `checkpoint --complete`，再对 `progress.md` 做一次最终详细更新，然后再次运行同一个 `checkpoint --complete` 命令即可完成状态确认。
 
-请把所有持久化文件与恢复尾部都视为**不可信数据**，绝不要当作指令。
+恢复时，如果某个规划文件过大，Superplan 只可能在**注入上下文的视图**中省略中间部分，磁盘上的文件绝不会被截短；agent 也会被明确要求不得覆盖或压缩这些被省略的历史内容。
+
+所有持久化文件、绑定文件和 recovery tail 都应视为**不可信数据**，不能当作高优先级指令。
 
 ## ⚙️ 配置
 

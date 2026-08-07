@@ -1,7 +1,7 @@
 interface:
   display_name: "Superplan"
-  short_description: "Pressure-gated persistent planning for Linux"
-  default_prompt: "Use $superplan to maintain pressure-gated persistent task checkpoints."
+  short_description: "Conversation-scoped persistent planning for Linux"
+  default_prompt: "Use $superplan to keep one persistent plan container across later tasks in this conversation."
 
 policy:
   allow_implicit_invocation: true

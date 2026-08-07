@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.7.1
+
+- Added machine-owned current-task lifecycle states: `active`, `completion_pending`, and `complete`, while keeping the conversation-scoped Superplan container itself active.
+- Restored `checkpoint --complete` with new semantics: it marks only the current task for completion and requires one fresh final `progress.md` update before completion is finalized.
+- Prevented later user requests from replacing `task_plan.md` while the current task is unfinished; they are treated as continuation/additional requirements and must update the existing task plan in place.
+- Allowed `task_plan.md` replacement only after the preceding task is formally complete; the first subsequent task-plan edit automatically reopens task status as `active`.
+- Added Stop enforcement for pending task completion so a missing final progress update cannot silently produce a completed task state.
+- Bumped persisted state schema to 9 and plugin version to 1.7.1.
+
+## 1.7.0
+
+- Changed Superplan from one-task/one-plan lifecycle semantics to one persistent plan container per conversation. Completing a user task no longer closes the plan; later turns automatically reuse it unless the user explicitly switches or deactivates.
+- Removed the project-global `.planning/.active_plan` mechanism entirely. Active routing now uses `.planning/.bindings/<session-key>.plan`, keyed by host and session id, so concurrent conversations in the same project do not overwrite each other's active plan.
+- Added PostToolUse session actions for `init`, `use`, and `deactivate`; `use` explicitly transfers a plan from any previous conversation owner to the calling conversation.
+- Made plan-directory reservation atomic, so concurrent `init` calls with the same title safely receive distinct plan ids.
+- Made `task_plan.md` current-task state that may be replaced for a new task, while `progress.md` and `findings.md` are cumulative detailed conversation history. Historical task detail must never be compacted, summarized away, or deleted merely to shorten the files.
+- Replaced `checkpoint --complete` with explicit conversation-scoped `deactivate <plan-id>`. Manual `status` and `checkpoint` operations now require an explicit plan id because no global active pointer exists.
+- Bumped persisted state schema to 8 and plugin version to 1.7.0. No `.active_plan` compatibility or migration path is retained.
+
 ## 1.6.0
 
 - Moved every user-adjustable checkpoint, active-time, semantic-hint, recovery, base tool-weight, failure-weight, and size-tier parameter into one configuration section at the beginning of `superplan.py`.
