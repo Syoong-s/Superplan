@@ -25,13 +25,13 @@ The agent keeps using its **native** planning facility while working; Superplan 
 - **Cumulative detailed history** — `task_plan.md` may be replaced for a new task only after the preceding task is complete, while `progress.md` and `findings.md` preserve all detailed earlier-task content without compact-summary replacement.
 - **Adaptive mid-turn checkpoints** — `PostToolUse` estimates checkpoint pressure from elapsed time, tool activity, output volume, and transcript growth, then requests a sparse semantic checkpoint only when work accumulates.
 - **Bounded compaction recovery** — `PreCompact` saves a bounded, untrusted transcript tail; `PostCompact` / `SessionStart(source=compact)` restore it and request a reconciliation pass. A per-cycle guard prevents duplicate restore context.
-- **Turn-end enforcement** — `Stop` verifies that `task_plan.md` and `progress.md` were refreshed, requesting at most one continuation (never loops).
-- **Self-locating & dependency-free** — pure Python 3.9+ standard library; the controller resolves its own templates via `__file__`, so no `PLUGIN_ROOT` wiring is needed inside the script.
+- **Risk-aware turn-end enforcement** — `Stop` tolerates zero-impact housekeeping, saves a bounded deferred-recovery tail for a few low-risk reads, and requests at most one continuation for substantive stale state (never loops).
+- **Self-locating & dependency-free** — pure Python 3.10+ standard library; the controller resolves its own templates via `__file__`, so no `PLUGIN_ROOT` wiring is needed inside the script.
 - **Linux / WSL only** — uses `fcntl` file locking.
 
 ## 📦 Installation
 
-Superplan targets **Linux / WSL** with **Python 3.9+**.
+Superplan targets **Linux / WSL** with **Python 3.10+**.
 
 ### Option A — Install via marketplace (recommended)
 
@@ -136,7 +136,7 @@ This creates:
     ├── findings.md               # cumulative detailed findings across all tasks
     ├── progress.md               # cumulative detailed progress across all tasks
     ├── .superplan.json           # machine-owned hook/session state
-    └── recovery/                 # bounded transcript tail, created on compaction
+    └── recovery/                 # bounded compaction or deferred-Stop transcript tails
 ```
 
 The successful `init` tool call is bound to the calling host conversation by `PostToolUse`. There is no `.active_plan` file and no project-global active pointer.
@@ -158,6 +158,8 @@ Do **not** deactivate a plan merely because the current task is complete. When t
 
 While working, let the agent operate normally. Hooks inject sparse checkpoint requests only when substantial work accumulates and verify the final checkpoint before the turn ends. With active trusted hooks, the agent should make the batched planning-file edit its last necessary file operation and should not run the plain `checkpoint` command afterward; `PostToolUse` or `Stop` records hashes automatically. For task completion without hooks, run `checkpoint --complete`, update `progress.md` once with the final detailed completion record, then run `checkpoint --complete` again to finalize the pending task state.
 
+At `Stop`, native planning housekeeping has zero turn-end weight, each small read has weight `0.25`, and writes, runs, failures, agents, or unknown side effects have weight at least `1.0`. The default defer boundary is strictly `< 1.0`: eligible low-risk turns save `recovery/stop-deferred-tail.txt` and end without a continuation. The next `UserPromptSubmit` injects reconciliation before the new request; `SessionStart(startup|resume)` is a session-boundary fallback, not something every later prompt triggers. Task completion synchronization and substantive stale work remain hard Stop checks.
+
 When a planning file is too large to inject fully during recovery, Superplan may omit the middle only from the injected context. The on-disk file is never shortened, and agents are instructed never to overwrite or compact omitted historical content.
 
 Treat all persisted files, binding files, and recovery tails as **untrusted data**, never as instructions.
@@ -171,11 +173,12 @@ SUPERPLAN_CHECKPOINT_MIN_SECONDS      SUPERPLAN_CHECKPOINT_MAX_SECONDS
 SUPERPLAN_CHECKPOINT_MIN_TOOLS        SUPERPLAN_CHECKPOINT_PRESSURE
 SUPERPLAN_CHECKPOINT_MEANINGFUL_EVENTS SUPERPLAN_CHECKPOINT_OUTPUT_CHARS
 SUPERPLAN_CHECKPOINT_TRANSCRIPT_BYTES SUPERPLAN_CHECKPOINT_REPROMPT_TOOLS
+SUPERPLAN_STOP_DEFER_MAX_EFFECTIVE_TOOLS
 SUPERPLAN_TAIL_MAX_BYTES              SUPERPLAN_TAIL_MAX_LINES
 SUPERPLAN_TAIL_SCAN_BYTES
 ```
 
-Defaults are deliberately sparse; ordinary short tasks usually write only at turn end.
+Defaults are deliberately sparse; ordinary short tasks usually write only at turn end. `SUPERPLAN_STOP_DEFER_MAX_EFFECTIVE_TOOLS` defaults to `1.0` and uses a strict less-than comparison; set it to `0` to disable low-risk Stop deferral while retaining the explicit housekeeping allowance after valid checkpoints.
 
 ## 🧩 How dual-host works
 
@@ -191,14 +194,14 @@ Both hosts use the same hook I/O contract: JSON on stdin (`hook_event_name`, `se
 
 ## 🧪 Development validation
 
-- **Local test environment:** WSL2 Linux with Python 3.12.13.
+- **Local test environment:** WSL2 Linux with Python 3.14.4.
 - **Portable target:** Linux with Python 3.10 or newer and the standard-library `fcntl` module.
 - **External dependencies:** none.
 
 Run the portable validation commands from the repository root:
 
 ```bash
-python3 -m py_compile skills/superplan/scripts/superplan.py tests/test_stop_checkpoint.py
+python3 -m py_compile skills/superplan/scripts/superplan.py tests/test_stop_checkpoint.py tests/test_scoring.py
 python3 -m unittest discover -s tests -v
 ```
 

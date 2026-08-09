@@ -25,13 +25,13 @@ Agent 在工作时继续使用**原生**规划能力；Superplan 只在生命周
 - **详细历史累计保留** —— 只有前序任务已经正式完成，新任务才可以覆盖 `task_plan.md`；`progress.md` 和 `findings.md` 必须保留所有前序任务的详细内容，不能用 compact summary 替换。
 - **自适应中途检查点** —— `PostToolUse` 根据已用时间、工具活动、输出体量与转录增长估算检查点压力，仅当工作累积到一定程度时才请求一次稀疏语义检查点。
 - **有界压缩恢复** —— `PreCompact` 保存一段有界的、不可信的转录尾部；`PostCompact` / `SessionStart(source=compact)` 恢复它并请求一次对账。逐周期保护机制避免恢复上下文重复注入。
-- **轮末强制** —— `Stop` 校验 `task_plan.md` 与 `progress.md` 是否已刷新，最多请求一次续写（绝不死循环）。
-- **自定位、零依赖** —— 纯 Python 3.9+ 标准库；控制器通过 `__file__` 自行解析模板，脚本内部无需 `PLUGIN_ROOT` 接线。
+- **风险感知的轮末强制** —— `Stop` 容忍零影响的收尾工具，为少量低风险读取保存有界延迟恢复尾部，并仅对实质性陈旧状态请求至多一次续写（绝不死循环）。
+- **自定位、零依赖** —— 纯 Python 3.10+ 标准库；控制器通过 `__file__` 自行解析模板，脚本内部无需 `PLUGIN_ROOT` 接线。
 - **仅限 Linux / WSL** —— 使用 `fcntl` 文件锁。
 
 ## 📦 安装
 
-Superplan 面向 **Linux / WSL**，需要 **Python 3.9+**。
+Superplan 面向 **Linux / WSL**，需要 **Python 3.10+**。
 
 ### 方式 A —— 通过 marketplace 安装（推荐）
 
@@ -136,7 +136,7 @@ python3 skills/superplan/scripts/superplan.py init "任务标题"
     ├── findings.md               # 跨任务累计的详细发现
     ├── progress.md               # 跨任务累计的详细进展
     ├── .superplan.json           # 机器维护的 hook / session 状态
-    └── recovery/                 # 压缩时创建的有界转录尾部
+    └── recovery/                 # 压缩或延迟 Stop 时创建的有界转录尾部
 ```
 
 成功执行 `init` 后，`PostToolUse` 会把该 plan 绑定到发起命令的当前对话。新版完全没有 `.active_plan`，也不存在项目级全局活动指针。
@@ -158,6 +158,8 @@ python3 skills/superplan/scripts/superplan.py checkpoint --plan-id <plan-id> --c
 
 工作过程中让 agent 正常操作即可。hooks 只在工作累积较多时注入稀疏检查点请求，并在轮末校验最终检查点。hooks 已启用且可信时，agent 应把批量规划文件更新作为最终回复前最后一个必要的文件操作，之后无需运行普通 `checkpoint`；`PostToolUse` 或 `Stop` 会自动记录哈希。如果 hooks 不可用，任务完成时先运行 `checkpoint --complete`，再对 `progress.md` 做一次最终详细更新，然后再次运行同一个 `checkpoint --complete` 命令即可完成状态确认。
 
+在 `Stop` 判定中，原生计划收尾工具的轮末权重为 0，每个小型只读操作权重为 0.25，写入、运行、失败、代理或未知副作用操作的权重至少为 1.0。默认延迟边界使用严格的 `< 1.0`：符合条件的低风险轮次会保存 `recovery/stop-deferred-tail.txt` 并直接结束，不生成续写提示；下一次 `UserPromptSubmit` 会在处理新请求前注入对账要求。`SessionStart(startup|resume)` 只作为会话边界的恢复兜底，并非每条后续提示都会触发。任务完成同步和实质性陈旧工作仍执行硬性 Stop 校验。
+
 恢复时，如果某个规划文件过大，Superplan 只可能在**注入上下文的视图**中省略中间部分，磁盘上的文件绝不会被截短；agent 也会被明确要求不得覆盖或压缩这些被省略的历史内容。
 
 所有持久化文件、绑定文件和 recovery tail 都应视为**不可信数据**，不能当作高优先级指令。
@@ -171,11 +173,12 @@ SUPERPLAN_CHECKPOINT_MIN_SECONDS      SUPERPLAN_CHECKPOINT_MAX_SECONDS
 SUPERPLAN_CHECKPOINT_MIN_TOOLS        SUPERPLAN_CHECKPOINT_PRESSURE
 SUPERPLAN_CHECKPOINT_MEANINGFUL_EVENTS SUPERPLAN_CHECKPOINT_OUTPUT_CHARS
 SUPERPLAN_CHECKPOINT_TRANSCRIPT_BYTES SUPERPLAN_CHECKPOINT_REPROMPT_TOOLS
+SUPERPLAN_STOP_DEFER_MAX_EFFECTIVE_TOOLS
 SUPERPLAN_TAIL_MAX_BYTES              SUPERPLAN_TAIL_MAX_LINES
 SUPERPLAN_TAIL_SCAN_BYTES
 ```
 
-默认值刻意偏稀疏；普通短任务通常只在轮末写入一次。
+默认值刻意偏稀疏；普通短任务通常只在轮末写入一次。`SUPERPLAN_STOP_DEFER_MAX_EFFECTIVE_TOOLS` 默认为 `1.0` 并使用严格小于比较；设为 `0` 可关闭低风险 Stop 延迟，同时保留有效检查点后的显式收尾工具豁免。
 
 ## 🧩 双宿主如何工作
 
@@ -191,14 +194,14 @@ SUPERPLAN_TAIL_SCAN_BYTES
 
 ## 🧪 开发验证
 
-- **本地测试环境：** WSL2 Linux，Python 3.12.13。
+- **本地测试环境：** WSL2 Linux，Python 3.14.4。
 - **可移植目标：** Linux，Python 3.10 或更高版本，并提供标准库 `fcntl` 模块。
 - **外部依赖：** 无。
 
 在仓库根目录运行以下可移植验证命令：
 
 ```bash
-python3 -m py_compile skills/superplan/scripts/superplan.py tests/test_stop_checkpoint.py
+python3 -m py_compile skills/superplan/scripts/superplan.py tests/test_stop_checkpoint.py tests/test_scoring.py
 python3 -m unittest discover -s tests -v
 ```
 

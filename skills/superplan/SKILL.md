@@ -170,6 +170,7 @@ SUPERPLAN_CHECKPOINT_OUTPUT_CHARS
 SUPERPLAN_CHECKPOINT_TRANSCRIPT_BYTES
 SUPERPLAN_CHECKPOINT_REPROMPT_TOOLS
 SUPERPLAN_ACTIVE_GAP_CAP_SECONDS
+SUPERPLAN_STOP_DEFER_MAX_EFFECTIVE_TOOLS
 ```
 
 The built-in defaults are:
@@ -184,6 +185,7 @@ tool output:               300000 characters
 transcript growth:         1310720 bytes
 reprompt interval:         5 tools
 active gap cap:            300 seconds
+Stop defer boundary:       1.0 effective tools (strictly less than)
 ```
 
 Active time is not wall-clock time. On each substantive `PostToolUse`, Superplan adds the interval since the preceding substantive tool event, capped by `SUPERPLAN_ACTIVE_GAP_CAP_SECONDS`. Long idle periods therefore cannot directly exhaust the maximum-time boundary.
@@ -192,7 +194,15 @@ Tool pressure distinguishes durable state changes from observation. File edits u
 
 ## Turn-end checkpoint
 
-Immediately before the final response for an active turn, ensure the plan contains one coherent current-task checkpoint plus cumulative history. `Stop` accepts an already refreshed checkpoint or requests one continuation and always allows the next Stop to avoid a loop. If the task is actually finished, use `checkpoint --complete` first and satisfy its required one-time final `progress.md` update; if the task remains unfinished, leave task status active.
+Immediately before the final response for an active turn, ensure the plan contains one coherent current-task checkpoint plus cumulative history. If the task is actually finished, use `checkpoint --complete` first and satisfy its required one-time final `progress.md` update; `completion_pending` is never eligible for deferred reconciliation. If the task remains unfinished, leave task status active.
+
+`Stop` maintains a separate effective-tool counter after each accepted checkpoint. Native planning housekeeping counts as `0`, bounded small reads count as `0.25`, and writes, runs, failures, agents, or unknown side effects count as at least `1.0`. With the default strict boundary of `1.0`:
+
+- Zero-impact housekeeping after a valid checkpoint is tolerated silently.
+- Low-risk work below the boundary saves `recovery/stop-deferred-tail.txt` plus metadata and allows the turn to end without generating a Stop continuation.
+- Work at or above the boundary, unresolved mandatory checkpoints, and task-completion synchronization still request one continuation; the next Stop always fails open to avoid a loop.
+
+After a deferred Stop, the next `UserPromptSubmit` requests reconciliation before the new prompt is handled. `SessionStart(startup|resume)` provides the same recovery context when a session boundary occurs; ordinary later prompts must not be assumed to trigger `SessionStart`. Update the semantic files when durable state is missing and let `PostToolUse` accept the edit. If nothing material is missing, run `checkpoint --reconciled` once to clear the deferred state.
 
 With trusted lifecycle hooks, make the batched planning-file edit the last necessary file-edit operation before drafting the final response. Do **not** run the plain `checkpoint` command afterward; `PostToolUse` or `Stop` records the updated hashes automatically.
 
@@ -220,12 +230,12 @@ Then continue the current task without repeating verified work.
 ## Lifecycle behavior
 
 - `SessionStart` resolves only the binding for the current host conversation and restores that plan.
-- `UserPromptSubmit` automatically reasserts reuse of the same conversation plan on every later turn.
+- `UserPromptSubmit` automatically reasserts reuse of the same conversation plan on every later turn and performs deferred-Stop recovery before the new request.
 - `PostToolUse` binds successful `init/use/deactivate` actions before ordinary routing, exposes pressure-gated checkpoint opportunities, requests hard checkpoints, and accepts completed updates.
 - `PreCompact` saves a bounded transcript tail and recovery metadata; it does not fabricate a semantic summary.
 - `PostCompact` restores the bound checkpoint after compaction.
-- `Stop` accepts the AI-authored checkpoint or requests one continuation before ending the turn.
-- `SessionEnd` records a final transcript pointer but does not remove the conversation binding, so later resume can restore the same plan.
+- `Stop` accepts the AI-authored checkpoint, tolerates zero-impact housekeeping, defers bounded low-risk work, or requests one continuation for substantive stale state.
+- `SessionEnd` records a final transcript pointer without replacing pending deferred-Stop recovery and does not remove the conversation binding, so later resume can restore the same plan.
 
 When hooks are disabled or untrusted, update the semantic files manually and record their hashes using the known plan id:
 

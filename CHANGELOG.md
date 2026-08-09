@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.8.0
+
+- Added a Stop-specific effective-tool tolerance with a strict default boundary of `1.0`: native planning housekeeping counts as `0`, small reads count as `0.25`, and writes/runs/failures/agents count as at least `1.0`.
+- Made zero-impact housekeeping after an accepted checkpoint end silently, preventing a final native `update_plan` call from forcing a duplicate Stop continuation.
+- Added low-risk deferred Stop recovery. Eligible turns save bounded `stop-deferred-tail.txt` / metadata artifacts and end without blocking; the next `UserPromptSubmit` reconciles first, with `SessionStart(resume)` as a fallback.
+- Preserved hard Stop enforcement for `completion_pending`, unresolved mandatory checkpoints, and any tool activity at or above the configured tolerance.
+- Preserved deferred recovery across `SessionEnd`, added automatic and explicit no-edit reconciliation paths, and bumped persisted state schema to 10.
+- Repaired stale regression fixtures and expectations so the complete 36-test suite matches the current controller and exercises the new Stop lifecycle.
+
 ## 1.7.1
 
 - Added machine-owned current-task lifecycle states: `active`, `completion_pending`, and `complete`, while keeping the conversation-scoped Superplan container itself active.
