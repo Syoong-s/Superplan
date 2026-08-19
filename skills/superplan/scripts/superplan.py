@@ -543,7 +543,10 @@ def fresh_adaptive_state(transcript_path: Any = None) -> dict[str, Any]:
 # Method: Fill schema defaults without discarding forward-compatible fields
 # ==========================================
 def normalize_state(state: dict[str, Any]) -> dict[str, Any]:
-    state["schema_version"] = 10
+    state["schema_version"] = 11
+    # Init hashes are only the changed-file baseline. Older states cannot prove
+    # that accept_checkpoint() has ever been called, so migrate conservatively.
+    state.setdefault("checkpoint_valid", False)
     state.setdefault("last_checkpoint_origin", None)
     state.setdefault("manual_checkpoint_required_files_changed", False)
     state.setdefault("compact_restore_emitted", False)
@@ -633,6 +636,7 @@ def accept_checkpoint(
     origin: str,
 ) -> None:
     state["checkpoint_hashes"] = hashes_for(plan_dir)
+    state["checkpoint_valid"] = True
     state["last_checkpoint_turn_id"] = turn_id or None
     state["last_checkpoint_origin"] = origin
     state["recovery"] = None
@@ -661,7 +665,7 @@ def initialize_plan(root: Path, title: str) -> Path:
         atomic_write_text(plan_dir / name, render_template(name, title))
 
     state: dict[str, Any] = {
-        "schema_version": 10,
+        "schema_version": 11,
         "plan_id": plan_id,
         "status": "unbound",
         "task_status": TASK_STATUS_ACTIVE,
@@ -674,6 +678,7 @@ def initialize_plan(root: Path, title: str) -> Path:
         "session_host": None,
         "session_key": None,
         "checkpoint_hashes": hashes_for(plan_dir),
+        "checkpoint_valid": False,
         "last_checkpoint_turn_id": None,
         "last_checkpoint_origin": None,
         "manual_checkpoint_required_files_changed": False,
@@ -1673,9 +1678,30 @@ def maybe_accept_pending_checkpoint(
     return True
 
 
+def maybe_accept_automatic_checkpoint(
+    plan_dir: Path,
+    state: dict[str, Any],
+    payload: dict[str, Any],
+) -> bool:
+    """Accept a normal dual-file planning update as the next checkpoint."""
+    changed = changed_planning_files(plan_dir, state)
+    if not REQUIRED_CHECKPOINT_FILES.issubset(changed):
+        return False
+    turn_id = payload.get("turn_id") if isinstance(payload.get("turn_id"), str) else None
+    accept_checkpoint(
+        plan_dir,
+        state,
+        turn_id=turn_id,
+        transcript_path=payload.get("transcript_path"),
+        boundary="automatic-checkpoint",
+        origin="automatic",
+    )
+    return True
+
+
 # ==========================================
 # Function: Track tool pressure and reconcile checkpoint-producing tool calls
-# Method: Bind plain CLI checkpoints to their host turn without counting them as substantive work
+# Method: Preserve special checkpoint provenance, then accept ordinary dual-file updates before scoring
 # ==========================================
 def post_tool_use_hook(plan_dir: Path, state: dict[str, Any], payload: dict[str, Any]) -> None:
     event_name = payload.get("hook_event_name")
@@ -1717,6 +1743,9 @@ def post_tool_use_hook(plan_dir: Path, state: dict[str, Any], payload: dict[str,
         ):
             state["last_checkpoint_turn_id"] = turn_id
         save_state(plan_dir, state)
+        return
+
+    if maybe_accept_automatic_checkpoint(plan_dir, state, payload):
         return
 
     adaptive = state["adaptive"]
@@ -1965,13 +1994,21 @@ def stop_hook(plan_dir: Path, state: dict[str, Any], payload: dict[str, Any]) ->
     maybe_reopen_completed_task(plan_dir, state)
     changed = changed_planning_files(plan_dir, state)
     if REQUIRED_CHECKPOINT_FILES.issubset(changed):
+        adaptive = state["adaptive"]
+        pending_reason = adaptive.get("pending_reason") if adaptive.get("pending") else None
+        if pending_reason is not None:
+            boundary, origin = checkpoint_boundary_for(pending_reason)
+        elif adaptive.get("semantic_window_open"):
+            boundary, origin = "semantic-checkpoint", "semantic"
+        else:
+            boundary, origin = "stop-checkpoint", "stop"
         accept_checkpoint(
             plan_dir,
             state,
             turn_id=turn_id or None,
             transcript_path=payload.get("transcript_path"),
-            boundary="stop-checkpoint",
-            origin="stop",
+            boundary=boundary,
+            origin=origin,
         )
         return
 
@@ -1992,6 +2029,24 @@ def stop_hook(plan_dir: Path, state: dict[str, Any], payload: dict[str, Any]) ->
         emit_hook_json({"decision": "block", "reason": reason})
         return
 
+    valid_checkpoint = state.get("checkpoint_valid") is True
+    if not valid_checkpoint:
+        if stop_hook_active:
+            allow_unsynced_stop(plan_dir, state, payload)
+            return
+        mark_pending(state, "stop", turn_id or None)
+        record_boundary(state, "stop-checkpoint-requested")
+        save_state(plan_dir, state)
+        reason = (
+            "[superplan] No valid checkpoint exists yet; init/template hashes are only a baseline. "
+            "Before ending this turn, update task_plan.md in place and update progress.md cumulatively "
+            "to the current end-of-turn state; update findings.md only for durable findings or decisions. "
+            "Once both required files change, the next PostToolUse will accept an automatic checkpoint. "
+            "Do not run the plain `superplan.py checkpoint` command; then finish the response again."
+        )
+        emit_hook_json({"decision": "block", "reason": reason})
+        return
+
     same_turn = bool(turn_id and state.get("last_checkpoint_turn_id") == turn_id)
     origin = state.get("last_checkpoint_origin")
     no_tools_since_checkpoint = int(adaptive.get("tool_calls") or 0) == 0
@@ -2003,8 +2058,9 @@ def stop_hook(plan_dir: Path, state: dict[str, Any], payload: dict[str, Any]) ->
         and no_tools_since_checkpoint
     )
     current_automatic_checkpoint = (
-        origin in {
-            "midturn", "semantic", "compact-reconcile", "stop", "stop-deferred", "task-complete",
+        valid_checkpoint
+        and origin in {
+            "automatic", "midturn", "semantic", "compact-reconcile", "stop", "stop-deferred", "task-complete",
         }
         and no_tools_since_checkpoint
     )
@@ -2012,14 +2068,17 @@ def stop_hook(plan_dir: Path, state: dict[str, Any], payload: dict[str, Any]) ->
         return
 
     automatic_origins = {
-        "midturn", "semantic", "compact-reconcile", "stop", "stop-deferred", "task-complete",
+        "automatic", "midturn", "semantic", "compact-reconcile", "stop", "stop-deferred", "task-complete",
     }
     checkpoint_allows_housekeeping = (
-        origin in automatic_origins
-        or (
-            same_turn
-            and origin == "manual"
-            and state.get("manual_checkpoint_required_files_changed") is True
+        valid_checkpoint
+        and (
+            origin in automatic_origins
+            or (
+                same_turn
+                and origin == "manual"
+                and state.get("manual_checkpoint_required_files_changed") is True
+            )
         )
     )
     if checkpoint_allows_housekeeping and effective_tools == 0.0:
@@ -2137,7 +2196,12 @@ def active_turn_context(plan_dir: Path, state: dict[str, Any]) -> str:
         "fully finished and verified, run `superplan.py checkpoint --plan-id <plan-id> --complete`. This is "
         "the task-completion marker, not plan deactivation. It deliberately requires one additional final "
         "progress.md update after the marker; the hook then records task status as complete. If the task is "
-        "not actually complete, do not use `--complete`. While lifecycle hooks are active, do not run the "
+        "not actually complete, do not use `--complete`. Final-response handoff: before drafting the final "
+        "response for an active task, if no valid checkpoint exists (init/templates never count) or substantive "
+        "work occurred since the latest checkpoint, batch-update task_plan.md and cumulative progress.md to "
+        "the end-of-turn state; update findings.md only for durable changes. Make this the last necessary file "
+        "edit and avoid further substantive tools. Once both required files change, PostToolUse checkpoints "
+        "automatically; Stop is fallback only. completion_pending follows the completion rule above. While lifecycle hooks are active, do not run the "
         "plain `superplan.py checkpoint` command; allow PostToolUse or Stop to record ordinary checkpoint "
         "edits automatically. Continue the user's requested work normally."
     )
@@ -2226,6 +2290,7 @@ def show_status(root: Path, plan_id: str) -> int:
     print(f"Current task status: {state.get('task_status', TASK_STATUS_ACTIVE)}")
     print(f"Task started at: {state.get('task_started_at') or 'unknown'}")
     print(f"Task completed at: {state.get('task_completed_at') or 'none'}")
+    print(f"Checkpoint valid: {'yes' if state.get('checkpoint_valid') is True else 'no'}")
     print(f"Last boundary: {state.get('last_boundary', 'unknown')}")
     print(f"Last checkpoint turn: {state.get('last_checkpoint_turn_id') or 'none'}")
     print(f"Last checkpoint origin: {state.get('last_checkpoint_origin') or 'none'}")

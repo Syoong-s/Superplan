@@ -1,6 +1,6 @@
 {
   "name": "superplan",
-  "version": "1.8.0",
+  "version": "1.8.2",
   "description": "Conversation-scoped persistent planning with task-completion gating, pressure-gated checkpoints, risk-aware deferred Stop recovery, cumulative history, and concurrent-session isolation for Codex and Claude Code.",
   "author": {
     "name": "Syoong-s",

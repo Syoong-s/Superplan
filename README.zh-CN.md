@@ -24,8 +24,9 @@ Agent 在工作时继续使用**原生**规划能力；Superplan 只在生命周
 - **多对话并发隔离** —— `.planning/.bindings/<session-key>.plan` 为每个 Codex / Claude Code 对话单独路由，同一项目内多个对话不会再争用全局活动指针。
 - **详细历史累计保留** —— 只有前序任务已经正式完成，新任务才可以覆盖 `task_plan.md`；`progress.md` 和 `findings.md` 必须保留所有前序任务的详细内容，不能用 compact summary 替换。
 - **自适应中途检查点** —— `PostToolUse` 根据已用时间、工具活动、输出体量与转录增长估算检查点压力，仅当工作累积到一定程度时才请求一次稀疏语义检查点。
+- **双文件自动检查点** —— `task_plan.md` 与 `progress.md` 都在上次正式检查点后发生变化时，下一个 `PostToolUse` 会立即接受一个真正的 `automatic` 检查点；`init` 创建的模板哈希只是差异基线，绝不算有效检查点。
 - **有界压缩恢复** —— `PreCompact` 保存一段有界的、不可信的转录尾部；`PostCompact` / `SessionStart(source=compact)` 恢复它并请求一次对账。逐周期保护机制避免恢复上下文重复注入。
-- **风险感知的轮末强制** —— `Stop` 容忍零影响的收尾工具，为少量低风险读取保存有界延迟恢复尾部，并仅对实质性陈旧状态请求至多一次续写（绝不死循环）。
+- **风险感知的轮末强制** —— 最终回复前必要时先做 final-response handoff；`Stop` 仍是硬性兜底，没有有效检查点时绝不会直接进入低风险延迟。
 - **自定位、零依赖** —— 纯 Python 3.10+ 标准库；控制器通过 `__file__` 自行解析模板，脚本内部无需 `PLUGIN_ROOT` 接线。
 - **仅限 Linux / WSL** —— 使用 `fcntl` 文件锁。
 
@@ -143,6 +144,8 @@ python3 skills/superplan/scripts/superplan.py init "任务标题"
 
 首次激活后，**同一对话**后续所有用户轮次都会自动复用同一个 plan。如果当前任务仍是 `active`，后续用户请求必须视为当前任务的继续或新增要求，只能在原有 `task_plan.md` 上继续修改，不能整体覆盖。只有前序任务已经正式标记为 `complete`，真正的新任务才允许整体替换 `task_plan.md`。`progress.md` 和 `findings.md` 中以前任务的详细内容必须原样保留并在其基础上增量修改，不得为了缩短文件而折叠、删除或压缩成 compact summary。
 
+`init` 创建的哈希只是“文件是否变化”的基线，并不建立有效检查点。当 `task_plan.md` 与 `progress.md` 都在最近一次正式检查点之后发生变化时，下一个 `PostToolUse` 会立即记录 `automatic` 检查点并重置检查点计数器；只有出现持久化发现变化时才需要更新 `findings.md`。
+
 显式管理命令：
 
 ```bash
@@ -156,9 +159,9 @@ python3 skills/superplan/scripts/superplan.py checkpoint --plan-id <plan-id> --c
 
 不要因为当前任务完成就执行 `deactivate`。当前任务真正完成并验证后，执行 `checkpoint --complete`：控制器会先将任务置为 `completion_pending`，随后 hook 强制要求对 `progress.md` 再做一次新的最终语义更新；只有检测到这次更新后，任务状态才正式变成 `complete`。Superplan 本身始终保持活动，以便下一条用户请求继续使用同一个 plan。
 
-工作过程中让 agent 正常操作即可。hooks 只在工作累积较多时注入稀疏检查点请求，并在轮末校验最终检查点。hooks 已启用且可信时，agent 应把批量规划文件更新作为最终回复前最后一个必要的文件操作，之后无需运行普通 `checkpoint`；`PostToolUse` 或 `Stop` 会自动记录哈希。如果 hooks 不可用，任务完成时先运行 `checkpoint --complete`，再对 `progress.md` 做一次最终详细更新，然后再次运行同一个 `checkpoint --complete` 命令即可完成状态确认。
+工作过程中让 agent 正常操作即可。hooks 只在工作累积较多时注入稀疏检查点请求，并在轮末校验最终检查点。准备最终回复前，如果尚无有效检查点，或最近检查点之后又发生了实质性工作，应一次性更新 `task_plan.md` 与 `progress.md`，并把它作为最后一个必要的文件操作；`PostToolUse` 会自动记录检查点，`Stop` 仅作兜底。如果 hooks 不可用，任务完成时先运行 `checkpoint --complete`，再对 `progress.md` 做一次最终详细更新，然后再次运行同一个 `checkpoint --complete` 命令即可完成状态确认。
 
-在 `Stop` 判定中，原生计划收尾工具的轮末权重为 0，每个小型只读操作权重为 0.25，写入、运行、失败、代理或未知副作用操作的权重至少为 1.0。默认延迟边界使用严格的 `< 1.0`：符合条件的低风险轮次会保存 `recovery/stop-deferred-tail.txt` 并直接结束，不生成续写提示；下一次 `UserPromptSubmit` 会在处理新请求前注入对账要求。`SessionStart(startup|resume)` 只作为会话边界的恢复兜底，并非每条后续提示都会触发。任务完成同步和实质性陈旧工作仍执行硬性 Stop 校验。
+在 `Stop` 判定中，原生计划收尾工具的轮末权重为 0，每个小型只读操作权重为 0.25，写入、运行、失败、代理或未知副作用操作的权重至少为 1.0。默认延迟边界使用严格的 `< 3.0`，但前提是已经存在有效检查点；没有有效检查点时必须先同步。符合条件的低风险轮次会保存 `recovery/stop-deferred-tail.txt` 并直接结束，不生成续写提示；下一次 `UserPromptSubmit` 会在处理新请求前注入对账要求。`SessionStart(startup|resume)` 只作为会话边界的恢复兜底，并非每条后续提示都会触发。任务完成同步和实质性陈旧工作仍执行硬性 Stop 校验。
 
 恢复时，如果某个规划文件过大，Superplan 只可能在**注入上下文的视图**中省略中间部分，磁盘上的文件绝不会被截短；agent 也会被明确要求不得覆盖或压缩这些被省略的历史内容。
 
@@ -178,7 +181,7 @@ SUPERPLAN_TAIL_MAX_BYTES              SUPERPLAN_TAIL_MAX_LINES
 SUPERPLAN_TAIL_SCAN_BYTES
 ```
 
-默认值刻意偏稀疏；普通短任务通常只在轮末写入一次。`SUPERPLAN_STOP_DEFER_MAX_EFFECTIVE_TOOLS` 默认为 `1.0` 并使用严格小于比较；设为 `0` 可关闭低风险 Stop 延迟，同时保留有效检查点后的显式收尾工具豁免。
+默认值刻意偏稀疏；普通短任务通常只在轮末写入一次。`SUPERPLAN_STOP_DEFER_MAX_EFFECTIVE_TOOLS` 默认为 `3.0` 并使用严格小于比较；设为 `0` 可关闭低风险 Stop 延迟，同时保留有效检查点后的显式收尾工具豁免。
 
 ## 🧩 双宿主如何工作
 

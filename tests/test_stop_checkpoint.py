@@ -120,6 +120,251 @@ class StopCheckpointTests(unittest.TestCase):
             path.write_text(path.read_text(encoding="utf-8") + "\nTest update.\n", encoding="utf-8")
 
     # ==========================================
+    # Function: Establish a real automatic checkpoint for follow-up Stop tests
+    # Method: Change both required files and let PostToolUse accept them before scoring
+    # ==========================================
+    def establish_automatic_checkpoint(self, turn_id: str = "turn-auto") -> None:
+        self.update_required_files()
+        self.assertEqual(
+            self.run_hook(
+                "PostToolUse",
+                turn_id=turn_id,
+                tool_name="apply_patch",
+                tool_input={"command": "planning file patch"},
+                tool_response={"ok": True},
+            ),
+            "",
+        )
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertTrue(state["checkpoint_valid"])
+        self.assertEqual(state["last_checkpoint_origin"], "automatic")
+
+    # ==========================================
+    # Function: Verify init hashes are not a valid checkpoint
+    # Method: Inspect the freshly initialized state before any planning update
+    # ==========================================
+    def test_init_template_is_not_a_valid_checkpoint(self) -> None:
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertTrue(state["checkpoint_hashes"])
+        self.assertFalse(state["checkpoint_valid"])
+        self.assertIsNone(state["last_checkpoint_origin"])
+
+    # ==========================================
+    # Function: Verify legacy state migrates conservatively
+    # Method: Normalize a pre-validity state with hashes but no validity field
+    # ==========================================
+    def test_legacy_state_without_validity_defaults_to_false(self) -> None:
+        state = CONTROLLER.normalize_state(
+            {"checkpoint_hashes": {"task_plan.md": "template-hash"}}
+        )
+        self.assertEqual(state["schema_version"], 11)
+        self.assertFalse(state["checkpoint_valid"])
+
+    # ==========================================
+    # Function: Verify a partial planning edit does not checkpoint
+    # Method: Change task_plan.md alone and invoke PostToolUse
+    # ==========================================
+    def test_only_task_plan_change_does_not_checkpoint(self) -> None:
+        task_plan = self.plan_dir / "task_plan.md"
+        task_plan.write_text(
+            task_plan.read_text(encoding="utf-8") + "\nTask-plan-only update.\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            self.run_hook(
+                "PostToolUse",
+                turn_id="turn-partial",
+                tool_name="apply_patch",
+                tool_input={"command": "task plan patch"},
+                tool_response={"ok": True},
+            ),
+            "",
+        )
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertFalse(state["checkpoint_valid"])
+        self.assertIsNone(state["last_checkpoint_origin"])
+
+    # ==========================================
+    # Function: Verify both required files trigger automatic acceptance
+    # Method: Update files in separate tool events and inspect reset provenance/counters
+    # ==========================================
+    def test_both_required_files_trigger_automatic_checkpoint(self) -> None:
+        task_plan = self.plan_dir / "task_plan.md"
+        task_plan.write_text(
+            task_plan.read_text(encoding="utf-8") + "\nTask-plan update.\n",
+            encoding="utf-8",
+        )
+        self.run_hook(
+            "PostToolUse",
+            turn_id="turn-automatic",
+            tool_name="apply_patch",
+            tool_input={"command": "task plan patch"},
+            tool_response={"ok": True},
+        )
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertFalse(state["checkpoint_valid"])
+
+        progress = self.plan_dir / "progress.md"
+        progress.write_text(
+            progress.read_text(encoding="utf-8") + "\nProgress update.\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            self.run_hook(
+                "PostToolUse",
+                turn_id="turn-automatic",
+                tool_name="apply_patch",
+                tool_input={"command": "progress patch"},
+                tool_response={"ok": True},
+            ),
+            "",
+        )
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertTrue(state["checkpoint_valid"])
+        self.assertEqual(state["last_checkpoint_origin"], "automatic")
+        self.assertEqual(
+            state["checkpoint_hashes"],
+            CONTROLLER.hashes_for(self.plan_dir),
+        )
+        self.assertEqual(state["adaptive"]["tool_calls"], 0)
+        self.assertEqual(state["adaptive"]["stop_effective_tools"], 0.0)
+
+    # ==========================================
+    # Function: Verify an automatic checkpoint is immediately Stop-current
+    # Method: Accept both files and stop in the same turn without deferred recovery
+    # ==========================================
+    def test_automatic_checkpoint_makes_stop_silent(self) -> None:
+        self.establish_automatic_checkpoint("turn-automatic-stop")
+        self.assertEqual(self.run_hook("Stop", turn_id="turn-automatic-stop"), "")
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertNotEqual(state["last_checkpoint_origin"], "stop-deferred")
+        self.assertIsNone(state["recovery"])
+
+    # ==========================================
+    # Function: Verify work after an automatic checkpoint is still enforced
+    # Method: Run three substantive tools to reach the configured 3.0 Stop boundary
+    # ==========================================
+    def test_automatic_checkpoint_does_not_permanently_exempt_later_work(self) -> None:
+        self.establish_automatic_checkpoint("turn-after-automatic")
+        for index in range(3):
+            self.run_hook(
+                "PostToolUse",
+                turn_id="turn-after-automatic",
+                tool_command=f"pytest -q case-{index}",
+                tool_response="1 passed, 0 failed",
+            )
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertEqual(state["adaptive"]["stop_effective_tools"], 3.0)
+        response = json.loads(self.run_hook("Stop", turn_id="turn-after-automatic"))
+        self.assertEqual(response["decision"], "block")
+
+    # ==========================================
+    # Function: Verify Stop requires synchronization before the first checkpoint
+    # Method: Stop immediately after init even though the defer counter is zero
+    # ==========================================
+    def test_stop_without_valid_checkpoint_blocks(self) -> None:
+        response = json.loads(self.run_hook("Stop", turn_id="turn-no-valid"))
+        self.assertEqual(response["decision"], "block")
+        self.assertIn("No valid checkpoint exists yet", response["reason"])
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertEqual(state["adaptive"]["pending_reason"], "stop")
+
+    # ==========================================
+    # Function: Verify the second Stop remains fail-open
+    # Method: Repeat the no-valid checkpoint Stop with stop_hook_active enabled
+    # ==========================================
+    def test_second_stop_without_valid_checkpoint_fails_open(self) -> None:
+        first = json.loads(self.run_hook("Stop", turn_id="turn-no-valid-retry"))
+        self.assertEqual(first["decision"], "block")
+        second = json.loads(
+            self.run_hook(
+                "Stop",
+                turn_id="turn-no-valid-retry",
+                stop_hook_active=True,
+            )
+        )
+        self.assertNotIn("decision", second)
+        self.assertIn("forced continuation", second["systemMessage"])
+
+    # ==========================================
+    # Function: Verify completion_pending keeps task-complete provenance
+    # Method: Change only progress.md and ensure the completion state machine wins
+    # ==========================================
+    def test_completion_pending_does_not_use_generic_automatic_origin(self) -> None:
+        state = CONTROLLER.normalize_state(CONTROLLER.load_state(self.plan_dir))
+        state["task_status"] = CONTROLLER.TASK_STATUS_COMPLETION_PENDING
+        state["task_completion_progress_hash"] = CONTROLLER.sha256_file(
+            self.plan_dir / "progress.md"
+        )
+        CONTROLLER.save_state(self.plan_dir, state)
+        progress = self.plan_dir / "progress.md"
+        progress.write_text(
+            progress.read_text(encoding="utf-8") + "\nFinal completion record.\n",
+            encoding="utf-8",
+        )
+
+        output = json.loads(
+            self.run_hook(
+                "PostToolUse",
+                turn_id="turn-complete",
+                tool_name="apply_patch",
+                tool_input={"command": "completion progress patch"},
+                tool_response={"ok": True},
+            )
+        )
+        self.assertIn("systemMessage", output)
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertEqual(state["task_status"], CONTROLLER.TASK_STATUS_COMPLETE)
+        self.assertEqual(state["last_checkpoint_origin"], "task-complete")
+        self.assertTrue(state["checkpoint_valid"])
+
+    # ==========================================
+    # Function: Verify a pending mid-turn checkpoint keeps its origin
+    # Method: Mark midturn pending, update both files, and invoke PostToolUse
+    # ==========================================
+    def test_pending_checkpoint_preserves_midturn_origin(self) -> None:
+        state = CONTROLLER.normalize_state(CONTROLLER.load_state(self.plan_dir))
+        CONTROLLER.mark_pending(state, "midturn", "turn-pending")
+        CONTROLLER.save_state(self.plan_dir, state)
+        self.update_required_files()
+        self.assertEqual(
+            self.run_hook(
+                "PostToolUse",
+                turn_id="turn-pending",
+                tool_name="apply_patch",
+                tool_input={"command": "pending checkpoint patch"},
+                tool_response={"ok": True},
+            ),
+            "",
+        )
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertEqual(state["last_checkpoint_origin"], "midturn")
+        self.assertTrue(state["checkpoint_valid"])
+
+    # ==========================================
+    # Function: Verify a semantic checkpoint keeps its origin
+    # Method: Open the semantic window, update both files, and invoke PostToolUse
+    # ==========================================
+    def test_semantic_checkpoint_preserves_semantic_origin(self) -> None:
+        state = CONTROLLER.normalize_state(CONTROLLER.load_state(self.plan_dir))
+        state["adaptive"]["semantic_window_open"] = True
+        CONTROLLER.save_state(self.plan_dir, state)
+        self.update_required_files()
+        self.assertEqual(
+            self.run_hook(
+                "PostToolUse",
+                turn_id="turn-semantic",
+                tool_name="apply_patch",
+                tool_input={"command": "semantic checkpoint patch"},
+                tool_response={"ok": True},
+            ),
+            "",
+        )
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertEqual(state["last_checkpoint_origin"], "semantic")
+        self.assertTrue(state["checkpoint_valid"])
+
+    # ==========================================
     # Function: Record the current hashes through the plain checkpoint CLI path
     # Method: Call the controller operation with no turn identifier and discard its status line
     # ==========================================
@@ -260,7 +505,12 @@ class StopCheckpointTests(unittest.TestCase):
             tool_command="echo substantive-work",
         )
 
-        response = json.loads(self.run_hook("Stop", turn_id="turn-work"))
+        with patch.dict(
+            os.environ,
+            {"SUPERPLAN_STOP_DEFER_MAX_EFFECTIVE_TOOLS": "1.0"},
+            clear=False,
+        ):
+            response = json.loads(self.run_hook("Stop", turn_id="turn-work"))
         self.assertEqual(response["decision"], "block")
 
     # ==========================================
@@ -378,6 +628,7 @@ class StopCheckpointTests(unittest.TestCase):
     # Method: Count one quarter effective tool, save a dedicated tail, and inspect pending state
     # ==========================================
     def test_small_read_saves_deferred_stop_recovery(self) -> None:
+        self.establish_automatic_checkpoint("turn-read-checkpoint")
         self.run_hook(
             "PostToolUse",
             turn_id="turn-read",
@@ -400,6 +651,7 @@ class StopCheckpointTests(unittest.TestCase):
     # Method: Create deferred state and inspect both lifecycle contexts for the saved tail
     # ==========================================
     def test_next_prompt_and_session_resume_restore_deferred_context(self) -> None:
+        self.establish_automatic_checkpoint("turn-read-checkpoint")
         self.run_hook("PostToolUse", turn_id="turn-read", tool_command="git status")
         self.assertEqual(self.run_hook("Stop", turn_id="turn-read"), "")
 
@@ -420,6 +672,7 @@ class StopCheckpointTests(unittest.TestCase):
     # Method: Change both required files and let the next PostToolUse accept their hashes
     # ==========================================
     def test_deferred_stop_file_update_is_accepted(self) -> None:
+        self.establish_automatic_checkpoint("turn-read-checkpoint")
         self.run_hook("PostToolUse", turn_id="turn-read", tool_command="git status")
         self.assertEqual(self.run_hook("Stop", turn_id="turn-read"), "")
         self.update_required_files()
@@ -455,6 +708,7 @@ class StopCheckpointTests(unittest.TestCase):
     # Method: Invoke the reconciled checkpoint path while stop-deferred is pending
     # ==========================================
     def test_deferred_stop_no_edit_reconciliation_is_recorded(self) -> None:
+        self.establish_automatic_checkpoint("turn-read-checkpoint")
         self.run_hook("PostToolUse", turn_id="turn-read", tool_command="git status")
         self.assertEqual(self.run_hook("Stop", turn_id="turn-read"), "")
 
@@ -477,6 +731,7 @@ class StopCheckpointTests(unittest.TestCase):
     # Method: Defer one read, skip reconciliation, and require a continuation next turn
     # ==========================================
     def test_unresolved_deferred_stop_blocks_the_next_turn(self) -> None:
+        self.establish_automatic_checkpoint("turn-read-checkpoint")
         self.run_hook("PostToolUse", turn_id="turn-read", tool_command="git status")
         self.assertEqual(self.run_hook("Stop", turn_id="turn-read"), "")
 
@@ -485,18 +740,20 @@ class StopCheckpointTests(unittest.TestCase):
         self.assertIn("reconcile the previous turn", response["reason"])
 
     # ==========================================
-    # Function: Verify one high-risk operation still blocks immediately
-    # Method: Count a run as one effective tool, equal to the strict default boundary
+    # Function: Verify three high-risk operations reach the default Stop boundary
+    # Method: Establish a valid checkpoint, then count three runs at one effective tool each
     # ==========================================
-    def test_one_run_reaches_default_stop_boundary(self) -> None:
-        self.run_hook(
-            "PostToolUse",
-            turn_id="turn-run",
-            tool_command="pytest -q",
-            tool_response="12 passed, 0 failed",
-        )
+    def test_three_runs_reach_default_stop_boundary(self) -> None:
+        self.establish_automatic_checkpoint("turn-run-checkpoint")
+        for index in range(3):
+            self.run_hook(
+                "PostToolUse",
+                turn_id="turn-run",
+                tool_command=f"pytest -q case-{index}",
+                tool_response="12 passed, 0 failed",
+            )
         state = CONTROLLER.load_state(self.plan_dir)
-        self.assertEqual(state["adaptive"]["stop_effective_tools"], 1.0)
+        self.assertEqual(state["adaptive"]["stop_effective_tools"], 3.0)
 
         response = json.loads(self.run_hook("Stop", turn_id="turn-run"))
         self.assertEqual(response["decision"], "block")
@@ -504,10 +761,11 @@ class StopCheckpointTests(unittest.TestCase):
 
     # ==========================================
     # Function: Verify fractional reads accumulate to the strict boundary
-    # Method: Count four small reads at one quarter each and require immediate Stop enforcement
+    # Method: Count twelve small reads at one quarter each and require immediate Stop enforcement
     # ==========================================
-    def test_four_small_reads_reach_default_stop_boundary(self) -> None:
-        for index in range(4):
+    def test_twelve_small_reads_reach_default_stop_boundary(self) -> None:
+        self.establish_automatic_checkpoint("turn-reads-checkpoint")
+        for index in range(12):
             self.run_hook(
                 "PostToolUse",
                 turn_id="turn-reads",
@@ -515,7 +773,7 @@ class StopCheckpointTests(unittest.TestCase):
                 tool_response=f"clean-{index}",
             )
         state = CONTROLLER.load_state(self.plan_dir)
-        self.assertEqual(state["adaptive"]["stop_effective_tools"], 1.0)
+        self.assertEqual(state["adaptive"]["stop_effective_tools"], 3.0)
 
         response = json.loads(self.run_hook("Stop", turn_id="turn-reads"))
         self.assertEqual(response["decision"], "block")
@@ -538,9 +796,10 @@ class StopCheckpointTests(unittest.TestCase):
 
     # ==========================================
     # Function: Verify the Stop tolerance remains user configurable
-    # Method: Lower the strict boundary so one small read no longer qualifies for deferral
+    # Method: Establish a valid checkpoint, then lower the strict boundary so one small read no longer qualifies for deferral
     # ==========================================
     def test_stop_tolerance_environment_override(self) -> None:
+        self.establish_automatic_checkpoint("turn-read-checkpoint")
         self.run_hook("PostToolUse", turn_id="turn-read", tool_command="git status")
         with patch.dict(
             os.environ,
@@ -555,6 +814,7 @@ class StopCheckpointTests(unittest.TestCase):
     # Method: Nest the end pointer without replacing the stop-deferred recovery object
     # ==========================================
     def test_session_end_preserves_deferred_stop_recovery(self) -> None:
+        self.establish_automatic_checkpoint("turn-read-checkpoint")
         self.run_hook("PostToolUse", turn_id="turn-read", tool_command="git status")
         self.assertEqual(self.run_hook("Stop", turn_id="turn-read"), "")
         self.assertEqual(self.run_hook("SessionEnd", turn_id="turn-read"), "")

@@ -185,7 +185,7 @@ tool output:               300000 characters
 transcript growth:         1310720 bytes
 reprompt interval:         5 tools
 active gap cap:            300 seconds
-Stop defer boundary:       1.0 effective tools (strictly less than)
+Stop defer boundary:         3.0 effective tools (strictly less than)
 ```
 
 Active time is not wall-clock time. On each substantive `PostToolUse`, Superplan adds the interval since the preceding substantive tool event, capped by `SUPERPLAN_ACTIVE_GAP_CAP_SECONDS`. Long idle periods therefore cannot directly exhaust the maximum-time boundary.
@@ -196,7 +196,7 @@ Tool pressure distinguishes durable state changes from observation. File edits u
 
 Immediately before the final response for an active turn, ensure the plan contains one coherent current-task checkpoint plus cumulative history. If the task is actually finished, use `checkpoint --complete` first and satisfy its required one-time final `progress.md` update; `completion_pending` is never eligible for deferred reconciliation. If the task remains unfinished, leave task status active.
 
-`Stop` maintains a separate effective-tool counter after each accepted checkpoint. Native planning housekeeping counts as `0`, bounded small reads count as `0.25`, and writes, runs, failures, agents, or unknown side effects count as at least `1.0`. With the default strict boundary of `1.0`:
+`Stop` maintains a separate effective-tool counter after each accepted checkpoint. Native planning housekeeping counts as `0`, bounded small reads count as `0.25`, and writes, runs, failures, agents, or unknown side effects count as at least `1.0`. With the default strict boundary of `3.0`:
 
 - Zero-impact housekeeping after a valid checkpoint is tolerated silently.
 - Low-risk work below the boundary saves `recovery/stop-deferred-tail.txt` plus metadata and allows the turn to end without generating a Stop continuation.
@@ -205,6 +205,10 @@ Immediately before the final response for an active turn, ensure the plan contai
 After a deferred Stop, the next `UserPromptSubmit` requests reconciliation before the new prompt is handled. `SessionStart(startup|resume)` provides the same recovery context when a session boundary occurs; ordinary later prompts must not be assumed to trigger `SessionStart`. Update the semantic files when durable state is missing and let `PostToolUse` accept the edit. If nothing material is missing, run `checkpoint --reconciled` once to clear the deferred state.
 
 With trusted lifecycle hooks, make the batched planning-file edit the last necessary file-edit operation before drafting the final response. Do **not** run the plain `checkpoint` command afterward; `PostToolUse` or `Stop` records the updated hashes automatically.
+
+## Final-response handoff
+
+Before drafting the final response for an active task, if no valid checkpoint exists (init/templates never count) or substantive work occurred since the latest checkpoint, batch-update `task_plan.md` and cumulative `progress.md` to the end-of-turn state; update `findings.md` only for durable changes. Make this the last necessary file edit and avoid further substantive tools. Once both required files change, `PostToolUse` checkpoints automatically; `Stop` is fallback only. `completion_pending` follows the completion rule above.
 
 Finishing the user's current task is **not** a plan lifecycle boundary. Leave Superplan active so the next user turn in the same conversation automatically reuses the same plan container.
 

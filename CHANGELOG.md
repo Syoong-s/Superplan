@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.8.2
+
+- Added explicit `checkpoint_valid` state so init/template hashes remain a diff baseline and never count as a real checkpoint; persisted state schema is now 11.
+- Added automatic `PostToolUse` checkpoint acceptance when both `task_plan.md` and `progress.md` changed since the last accepted checkpoint, while preserving completion, pending, and semantic checkpoint provenance.
+- Added the Final-response handoff guidance and made Stop a freshness/completeness fallback; plans without a valid checkpoint cannot use low-risk Stop deferral.
+- Synchronized regression tests and README documentation with the current strict `3.0` default for `SUPERPLAN_STOP_DEFER_MAX_EFFECTIVE_TOOLS`.
+
 ## 1.8.0
 
 - Added a Stop-specific effective-tool tolerance with a strict default boundary of `1.0`: native planning housekeeping counts as `0`, small reads count as `0.25`, and writes/runs/failures/agents count as at least `1.0`.

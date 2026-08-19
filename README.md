@@ -24,8 +24,9 @@ The agent keeps using its **native** planning facility while working; Superplan 
 - **Concurrent-session isolation** — `.planning/.bindings/<session-key>.plan` routes each Codex/Claude conversation independently, so multiple conversations can use Superplan in the same project without fighting over a global active pointer.
 - **Cumulative detailed history** — `task_plan.md` may be replaced for a new task only after the preceding task is complete, while `progress.md` and `findings.md` preserve all detailed earlier-task content without compact-summary replacement.
 - **Adaptive mid-turn checkpoints** — `PostToolUse` estimates checkpoint pressure from elapsed time, tool activity, output volume, and transcript growth, then requests a sparse semantic checkpoint only when work accumulates.
+- **Automatic dual-file checkpoints** — `task_plan.md` and `progress.md` updates are accepted immediately by the next `PostToolUse` as a real checkpoint; init/template hashes are only a diff baseline and never count as a valid checkpoint.
 - **Bounded compaction recovery** — `PreCompact` saves a bounded, untrusted transcript tail; `PostCompact` / `SessionStart(source=compact)` restore it and request a reconciliation pass. A per-cycle guard prevents duplicate restore context.
-- **Risk-aware turn-end enforcement** — `Stop` tolerates zero-impact housekeeping, saves a bounded deferred-recovery tail for a few low-risk reads, and requests at most one continuation for substantive stale state (never loops).
+- **Risk-aware turn-end enforcement** — before a final response, the agent performs a final-response handoff when needed; `Stop` remains the hard fallback, never deferring a turn that has no valid checkpoint.
 - **Self-locating & dependency-free** — pure Python 3.10+ standard library; the controller resolves its own templates via `__file__`, so no `PLUGIN_ROOT` wiring is needed inside the script.
 - **Linux / WSL only** — uses `fcntl` file locking.
 
@@ -143,6 +144,8 @@ The successful `init` tool call is bound to the calling host conversation by `Po
 
 After activation, later user turns in the **same conversation** automatically reuse the same plan container. If the current task is still active, later requests are treated as continuation/additional requirements and must update the existing `task_plan.md` in place rather than replacing it. A genuinely new task may replace `task_plan.md` only after the preceding task has been formally marked complete. Old detailed content in `progress.md` and `findings.md` must remain intact and must not be collapsed into compact summaries.
 
+The hashes created by `init` are only the changed-file baseline; they do not establish a valid checkpoint. Once both `task_plan.md` and `progress.md` have changed since the latest accepted checkpoint, the next `PostToolUse` immediately records an `automatic` checkpoint and resets checkpoint counters. `findings.md` is updated only when durable findings changed.
+
 Explicit management commands:
 
 ```bash
@@ -156,9 +159,9 @@ python3 skills/superplan/scripts/superplan.py checkpoint --plan-id <plan-id> --c
 
 Do **not** deactivate a plan merely because the current task is complete. When the task is fully finished and verified, use `checkpoint --complete`. This first sets task status to `completion_pending`; the hook then requires one new final semantic update to `progress.md`. Only after that file changes is task status finalized as `complete`. Superplan itself stays active for the next user turn.
 
-While working, let the agent operate normally. Hooks inject sparse checkpoint requests only when substantial work accumulates and verify the final checkpoint before the turn ends. With active trusted hooks, the agent should make the batched planning-file edit its last necessary file operation and should not run the plain `checkpoint` command afterward; `PostToolUse` or `Stop` records hashes automatically. For task completion without hooks, run `checkpoint --complete`, update `progress.md` once with the final detailed completion record, then run `checkpoint --complete` again to finalize the pending task state.
+While working, let the agent operate normally. Hooks inject sparse checkpoint requests only when substantial work accumulates and verify the final checkpoint before the turn ends. Before drafting a final response, if no valid checkpoint exists or substantive work occurred after the latest checkpoint, batch-update `task_plan.md` and `progress.md` once and make that the last necessary file operation; `PostToolUse` records the checkpoint automatically and `Stop` is fallback. For task completion without hooks, run `checkpoint --complete`, update `progress.md` once with the final detailed completion record, then run `checkpoint --complete` again to finalize the pending task state.
 
-At `Stop`, native planning housekeeping has zero turn-end weight, each small read has weight `0.25`, and writes, runs, failures, agents, or unknown side effects have weight at least `1.0`. The default defer boundary is strictly `< 1.0`: eligible low-risk turns save `recovery/stop-deferred-tail.txt` and end without a continuation. The next `UserPromptSubmit` injects reconciliation before the new request; `SessionStart(startup|resume)` is a session-boundary fallback, not something every later prompt triggers. Task completion synchronization and substantive stale work remain hard Stop checks.
+At `Stop`, native planning housekeeping has zero turn-end weight, each small read has weight `0.25`, and writes, runs, failures, agents, or unknown side effects have weight at least `1.0`. The default defer boundary is strictly `< 3.0`, but only after a valid checkpoint exists; eligible low-risk turns save `recovery/stop-deferred-tail.txt` and end without a continuation. A plan with no valid checkpoint always requires synchronization first. The next `UserPromptSubmit` injects reconciliation before the new request; `SessionStart(startup|resume)` is a session-boundary fallback, not something every later prompt triggers. Task completion synchronization and substantive stale work remain hard Stop checks.
 
 When a planning file is too large to inject fully during recovery, Superplan may omit the middle only from the injected context. The on-disk file is never shortened, and agents are instructed never to overwrite or compact omitted historical content.
 
@@ -178,7 +181,7 @@ SUPERPLAN_TAIL_MAX_BYTES              SUPERPLAN_TAIL_MAX_LINES
 SUPERPLAN_TAIL_SCAN_BYTES
 ```
 
-Defaults are deliberately sparse; ordinary short tasks usually write only at turn end. `SUPERPLAN_STOP_DEFER_MAX_EFFECTIVE_TOOLS` defaults to `1.0` and uses a strict less-than comparison; set it to `0` to disable low-risk Stop deferral while retaining the explicit housekeeping allowance after valid checkpoints.
+Defaults are deliberately sparse; ordinary short tasks usually write only at turn end. `SUPERPLAN_STOP_DEFER_MAX_EFFECTIVE_TOOLS` defaults to `3.0` and uses a strict less-than comparison; set it to `0` to disable low-risk Stop deferral while retaining the explicit housekeeping allowance after valid checkpoints.
 
 ## 🧩 How dual-host works
 
