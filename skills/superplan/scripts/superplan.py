@@ -406,7 +406,6 @@ def bind_plan_to_session(
         state["status"] = "active"
         if reset_session_state:
             state["last_checkpoint_turn_id"] = None
-            state["last_checkpoint_origin"] = None
             state["manual_checkpoint_required_files_changed"] = False
             state["recovery"] = None
             reset_adaptive(state)
@@ -626,6 +625,12 @@ def checkpoint_boundary_for(reason: str | None) -> tuple[str, str]:
     return "midturn-checkpoint", "midturn"
 
 
+def checkpoint_establishes_validity(plan_dir: Path, state: dict[str, Any]) -> bool:
+    """Return whether the current files form a first complete required checkpoint."""
+    changed = changed_planning_files(plan_dir, state)
+    return REQUIRED_CHECKPOINT_FILES.issubset(changed)
+
+
 def accept_checkpoint(
     plan_dir: Path,
     state: dict[str, Any],
@@ -635,8 +640,11 @@ def accept_checkpoint(
     boundary: str,
     origin: str,
 ) -> None:
+    establishes_validity = checkpoint_establishes_validity(plan_dir, state)
+    state["checkpoint_valid"] = (
+        state.get("checkpoint_valid") is True or establishes_validity
+    )
     state["checkpoint_hashes"] = hashes_for(plan_dir)
-    state["checkpoint_valid"] = True
     state["last_checkpoint_turn_id"] = turn_id or None
     state["last_checkpoint_origin"] = origin
     state["recovery"] = None
@@ -1101,6 +1109,20 @@ def allow_unsynced_stop(
 # ---------------------------------------------------------------------------
 
 
+def has_fresh_checkpoint_for_completion(state: dict[str, Any]) -> bool:
+    """Return whether completion can safely start from a fresh valid checkpoint."""
+    if state.get("checkpoint_valid") is not True:
+        return False
+    adaptive = state.get("adaptive")
+    if not isinstance(adaptive, dict):
+        return False
+    return (
+        adaptive.get("pending") is not True
+        and int(adaptive.get("tool_calls") or 0) == 0
+        and float(adaptive.get("stop_effective_tools") or 0.0) == 0.0
+    )
+
+
 def task_completion_prompt(plan_dir: Path) -> str:
     return (
         "[superplan] The current task has been marked for completion, but completion is not final yet. "
@@ -1130,6 +1152,8 @@ def finalize_task_completion(
     payload: dict[str, Any],
 ) -> bool:
     if state.get("task_status") != TASK_STATUS_COMPLETION_PENDING:
+        return False
+    if not has_fresh_checkpoint_for_completion(state):
         return False
     if not task_completion_progress_changed(plan_dir, state):
         return False
@@ -2192,18 +2216,11 @@ def active_turn_context(plan_dir: Path, state: dict[str, Any]) -> str:
         "pressure is substantial; then independently decide whether a critical finding, major plan change, "
         "verified stage completion, or next-step-changing failure justifies one batched update. Without such "
         "an opportunity, update early only for an exceptional discovery that invalidates the current task "
-        "plan; routine progress is not sufficient. Before drafting a final response, if the current task is "
-        "fully finished and verified, run `superplan.py checkpoint --plan-id <plan-id> --complete`. This is "
-        "the task-completion marker, not plan deactivation. It deliberately requires one additional final "
-        "progress.md update after the marker; the hook then records task status as complete. If the task is "
-        "not actually complete, do not use `--complete`. Final-response handoff: before drafting the final "
-        "response for an active task, if no valid checkpoint exists (init/templates never count) or substantive "
-        "work occurred since the latest checkpoint, batch-update task_plan.md and cumulative progress.md to "
-        "the end-of-turn state; update findings.md only for durable changes. Make this the last necessary file "
-        "edit and avoid further substantive tools. Once both required files change, PostToolUse checkpoints "
-        "automatically; Stop is fallback only. completion_pending follows the completion rule above. While lifecycle hooks are active, do not run the "
-        "plain `superplan.py checkpoint` command; allow PostToolUse or Stop to record ordinary checkpoint "
-        "edits automatically. Continue the user's requested work normally."
+        "plan; routine progress is not sufficient. Before `--complete` or final output, if no valid checkpoint "
+        "exists or substantive work followed it, update task_plan.md + progress.md once; PostToolUse checkpoints "
+        "automatically. Then follow completion handling if finished. Stop is fallback. While lifecycle hooks "
+        "are active, do not run the plain `superplan.py checkpoint` command; allow PostToolUse or Stop to record "
+        "ordinary checkpoint edits automatically. Continue the user's requested work normally."
     )
 
 
@@ -2396,6 +2413,13 @@ def request_task_completion(root: Path, plan_id: str) -> int:
             print(f"Current task already complete: {plan_dir}")
             return 0
         if task_status == TASK_STATUS_COMPLETION_PENDING:
+            if state.get("checkpoint_valid") is not True:
+                print(
+                    "A fresh valid checkpoint is required before task completion. "
+                    "Update task_plan.md and progress.md first, then retry --complete.",
+                    file=sys.stderr,
+                )
+                return 1
             if task_completion_progress_changed(plan_dir, state):
                 state["task_status"] = TASK_STATUS_COMPLETE
                 state["task_completed_at"] = utc_now()
@@ -2412,6 +2436,15 @@ def request_task_completion(root: Path, plan_id: str) -> int:
                 return 0
             print(f"Task completion already pending final progress update: {plan_dir}")
             return 0
+
+        if not has_fresh_checkpoint_for_completion(state):
+            print(
+                "A fresh valid checkpoint is required before task completion. "
+                "Update task_plan.md and progress.md to the current end-of-turn state; "
+                "PostToolUse will checkpoint automatically, then retry --complete.",
+                file=sys.stderr,
+            )
+            return 1
 
         state["task_status"] = TASK_STATUS_COMPLETION_PENDING
         state["task_completion_requested_at"] = utc_now()

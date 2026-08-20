@@ -114,6 +114,8 @@ python3 "$SUPERPLAN_DIR/scripts/superplan.py" checkpoint --plan-id <plan-id> --c
 
 `--complete` marks only the **current task**, never the conversation-scoped plan. The controller first sets task status to `completion_pending`; it does not immediately finalize completion. `PostToolUse` then requires exactly one new semantic update to `progress.md` containing the final detailed completion record for that task. Preserve all prior progress history. After the next successful `progress.md` edit is observed, the hook automatically changes task status to `complete` and records the checkpoint.
 
+Before running `--complete`, follow the Final-response handoff below. The command requires a fresh valid checkpoint; update both required planning files first if the checkpoint is missing or stale.
+
 Do not use `--complete` for partial work, unresolved tasks, or a turn that only reports interim progress. If a completion request is pending, do not replace `task_plan.md` or begin a later task until the required final `progress.md` update has been recorded.
 
 Once task status is `complete`, a later genuinely new task may replace `task_plan.md`; the first task-plan edit automatically reopens current-task status as `active`. Superplan itself remains active throughout.
@@ -194,21 +196,13 @@ Tool pressure distinguishes durable state changes from observation. File edits u
 
 ## Turn-end checkpoint
 
-Immediately before the final response for an active turn, ensure the plan contains one coherent current-task checkpoint plus cumulative history. If the task is actually finished, use `checkpoint --complete` first and satisfy its required one-time final `progress.md` update; `completion_pending` is never eligible for deferred reconciliation. If the task remains unfinished, leave task status active.
-
-`Stop` maintains a separate effective-tool counter after each accepted checkpoint. Native planning housekeeping counts as `0`, bounded small reads count as `0.25`, and writes, runs, failures, agents, or unknown side effects count as at least `1.0`. With the default strict boundary of `3.0`:
-
-- Zero-impact housekeeping after a valid checkpoint is tolerated silently.
-- Low-risk work below the boundary saves `recovery/stop-deferred-tail.txt` plus metadata and allows the turn to end without generating a Stop continuation.
-- Work at or above the boundary, unresolved mandatory checkpoints, and task-completion synchronization still request one continuation; the next Stop always fails open to avoid a loop.
+`Stop` evaluates work since the latest valid checkpoint. Native planning housekeeping counts as `0`, bounded small reads count as `0.25`, and writes, runs, failures, agents, or unknown side effects count as at least `1.0`. Zero-impact housekeeping is allowed; low-risk work below the configured boundary may defer only when a valid checkpoint already exists. Missing validity, unresolved pending checkpoints, completion synchronization, or work at/above the boundary may request one continuation; the retry fails open.
 
 After a deferred Stop, the next `UserPromptSubmit` requests reconciliation before the new prompt is handled. `SessionStart(startup|resume)` provides the same recovery context when a session boundary occurs; ordinary later prompts must not be assumed to trigger `SessionStart`. Update the semantic files when durable state is missing and let `PostToolUse` accept the edit. If nothing material is missing, run `checkpoint --reconciled` once to clear the deferred state.
 
-With trusted lifecycle hooks, make the batched planning-file edit the last necessary file-edit operation before drafting the final response. Do **not** run the plain `checkpoint` command afterward; `PostToolUse` or `Stop` records the updated hashes automatically.
-
 ## Final-response handoff
 
-Before drafting the final response for an active task, if no valid checkpoint exists (init/templates never count) or substantive work occurred since the latest checkpoint, batch-update `task_plan.md` and cumulative `progress.md` to the end-of-turn state; update `findings.md` only for durable changes. Make this the last necessary file edit and avoid further substantive tools. Once both required files change, `PostToolUse` checkpoints automatically; `Stop` is fallback only. `completion_pending` follows the completion rule above.
+Before `--complete` or the final response, if no valid checkpoint exists (init never counts) or substantive work followed it, batch-update `task_plan.md` and cumulative `progress.md`; update `findings.md` only for durable changes. `PostToolUse` checkpoints automatically. If finished, then use `--complete` and make its required final `progress.md` update. `Stop` is fallback only.
 
 Finishing the user's current task is **not** a plan lifecycle boundary. Leave Superplan active so the next user turn in the same conversation automatically reuses the same plan container.
 
@@ -247,7 +241,7 @@ When hooks are disabled or untrusted, update the semantic files manually and rec
 python3 "$SUPERPLAN_DIR/scripts/superplan.py" checkpoint --plan-id <plan-id>
 ```
 
-For task completion without hooks, run `checkpoint --complete`, update `progress.md` with the required final detailed completion record, then run the same `checkpoint --complete` command once more; the second invocation detects the changed progress file and finalizes task status.
+For task completion without hooks, update both required files and run the plain `checkpoint` command to establish a fresh valid checkpoint, then run `checkpoint --complete`, update `progress.md` with the required final detailed completion record, and run the same `checkpoint --complete` command once more; the second invocation detects the changed progress file and finalizes task status.
 
 ## Data boundary
 

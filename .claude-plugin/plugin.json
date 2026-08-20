@@ -1,7 +1,7 @@
 {
   "name": "superplan",
   "description": "Conversation-scoped persistent planning with task-completion gating, cumulative detailed history, concurrent-session isolation, pressure-gated checkpoints, bounded compaction recovery, and risk-aware deferred Stop reconciliation for Codex and Claude Code.",
-  "version": "1.8.2",
+  "version": "1.8.3",
   "author": {
     "name": "Syoong-s",
     "url": "https://github.com/Syoong-s"

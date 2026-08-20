@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.3
+
+- Made first checkpoint validity strict: only a complete `task_plan.md` plus `progress.md` update can transition an init plan to `checkpoint_valid`; partial, findings-only, and no-edit reconciliation paths still record hashes without fabricating validity.
+- Required a fresh valid checkpoint before `checkpoint --complete`, guarded completion finalization against invalid edge states, and preserved checkpoint provenance across `use`/session rebind.
+- Simplified duplicate final-response handoff guidance, added regression coverage for the review cases, and made release CI run the full Python unittest suite before packaging.
+
 ## 1.8.2
 
 - Added explicit `checkpoint_valid` state so init/template hashes remain a diff baseline and never count as a real checkpoint; persisted state schema is now 11.

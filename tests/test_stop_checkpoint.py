@@ -9,7 +9,7 @@ import json
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
@@ -161,6 +161,43 @@ class StopCheckpointTests(unittest.TestCase):
         self.assertFalse(state["checkpoint_valid"])
 
     # ==========================================
+    # Function: Verify findings-only manual acceptance cannot establish validity
+    # Method: Record a changed findings.md file before any complete dual-file checkpoint
+    # ==========================================
+    def test_findings_only_manual_checkpoint_does_not_establish_initial_validity(self) -> None:
+        findings = self.plan_dir / "findings.md"
+        findings.write_text(
+            findings.read_text(encoding="utf-8") + "\nFindings-only update.\n",
+            encoding="utf-8",
+        )
+        self.record_plain_checkpoint()
+
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertFalse(state["checkpoint_valid"])
+        self.assertEqual(state["checkpoint_hashes"], CONTROLLER.hashes_for(self.plan_dir))
+        self.assertFalse(state["manual_checkpoint_required_files_changed"])
+
+    # ==========================================
+    # Function: Verify no-edit reconciliation cannot establish initial validity
+    # Method: Record a reconciled checkpoint against the untouched init baseline
+    # ==========================================
+    def test_no_edit_reconciliation_does_not_establish_initial_validity(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = CONTROLLER.record_manual_checkpoint(
+                self.workspace,
+                self.plan_dir.name,
+                turn_id="turn-reconcile-init",
+                reconciled=True,
+            )
+        self.assertEqual(result, 0)
+
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertFalse(state["checkpoint_valid"])
+        self.assertEqual(state["last_checkpoint_origin"], "compact-reconcile")
+        self.assertEqual(state["checkpoint_hashes"], CONTROLLER.hashes_for(self.plan_dir))
+
+    # ==========================================
     # Function: Verify a partial planning edit does not checkpoint
     # Method: Change task_plan.md alone and invoke PostToolUse
     # ==========================================
@@ -241,6 +278,29 @@ class StopCheckpointTests(unittest.TestCase):
         self.assertIsNone(state["recovery"])
 
     # ==========================================
+    # Function: Verify use preserves a valid automatic checkpoint
+    # Method: Rebind an unchanged plan to a new session and stop without work
+    # ==========================================
+    def test_use_preserves_valid_checkpoint_and_silent_stop(self) -> None:
+        self.establish_automatic_checkpoint("turn-before-use")
+        CONTROLLER.bind_plan_to_session(
+            self.plan_dir,
+            host="codex",
+            session_id="session-rebound",
+            reset_session_state=True,
+        )
+        self.session_id = "session-rebound"
+
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertTrue(state["checkpoint_valid"])
+        self.assertEqual(state["last_checkpoint_origin"], "automatic")
+        self.assertIsNone(state["last_checkpoint_turn_id"])
+        self.assertEqual(self.run_hook("Stop", turn_id="turn-after-use"), "")
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertEqual(state["last_checkpoint_origin"], "automatic")
+        self.assertIsNone(state["recovery"])
+
+    # ==========================================
     # Function: Verify work after an automatic checkpoint is still enforced
     # Method: Run three substantive tools to reach the configured 3.0 Stop boundary
     # ==========================================
@@ -287,10 +347,101 @@ class StopCheckpointTests(unittest.TestCase):
         self.assertIn("forced continuation", second["systemMessage"])
 
     # ==========================================
+    # Function: Verify a findings-only manual update preserves existing validity
+    # Method: Establish validity automatically, then record only a durable finding
+    # ==========================================
+    def test_findings_only_manual_checkpoint_preserves_existing_validity(self) -> None:
+        self.establish_automatic_checkpoint("turn-valid-before-finding")
+        findings = self.plan_dir / "findings.md"
+        findings.write_text(
+            findings.read_text(encoding="utf-8") + "\nDurable finding after validity.\n",
+            encoding="utf-8",
+        )
+        self.record_plain_checkpoint()
+
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertTrue(state["checkpoint_valid"])
+        self.assertFalse(state["manual_checkpoint_required_files_changed"])
+
+    # ==========================================
+    # Function: Verify completion rejects an uncheckpointed task
+    # Method: Request --complete immediately after init and retain active status
+    # ==========================================
+    def test_completion_rejects_without_valid_checkpoint(self) -> None:
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            result = CONTROLLER.request_task_completion(self.workspace, self.plan_dir.name)
+        self.assertNotEqual(result, 0)
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertEqual(state["task_status"], CONTROLLER.TASK_STATUS_ACTIVE)
+        self.assertFalse(state["checkpoint_valid"])
+
+    # ==========================================
+    # Function: Verify completion rejects stale work after a valid checkpoint
+    # Method: Add substantive tool work after automatic acceptance before --complete
+    # ==========================================
+    def test_completion_rejects_stale_checkpoint_after_substantive_tool(self) -> None:
+        self.establish_automatic_checkpoint("turn-before-complete-stale")
+        self.run_hook(
+            "PostToolUse",
+            turn_id="turn-before-complete-stale",
+            tool_command="pytest -q review-case",
+            tool_response="1 passed, 0 failed",
+        )
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            result = CONTROLLER.request_task_completion(self.workspace, self.plan_dir.name)
+        self.assertNotEqual(result, 0)
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertEqual(state["task_status"], CONTROLLER.TASK_STATUS_ACTIVE)
+        self.assertTrue(state["checkpoint_valid"])
+        self.assertEqual(state["adaptive"]["tool_calls"], 1)
+
+    # ==========================================
+    # Function: Verify a fresh valid checkpoint permits completion_pending
+    # Method: Complete the dual-file checkpoint, then request --complete without further work
+    # ==========================================
+    def test_fresh_checkpoint_allows_completion_pending(self) -> None:
+        self.establish_automatic_checkpoint("turn-before-complete")
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            result = CONTROLLER.request_task_completion(self.workspace, self.plan_dir.name)
+        self.assertEqual(result, 0)
+        state = CONTROLLER.load_state(self.plan_dir)
+        self.assertEqual(state["task_status"], CONTROLLER.TASK_STATUS_COMPLETION_PENDING)
+        self.assertTrue(state["checkpoint_valid"])
+
+    # ==========================================
+    # Function: Verify invalid completion finalization cannot bless a plan
+    # Method: Construct an invalid pending edge state, edit progress, and call finalization directly
+    # ==========================================
+    def test_invalid_completion_finalization_does_not_establish_validity(self) -> None:
+        state = CONTROLLER.normalize_state(CONTROLLER.load_state(self.plan_dir))
+        state["task_status"] = CONTROLLER.TASK_STATUS_COMPLETION_PENDING
+        state["checkpoint_valid"] = False
+        state["task_completion_progress_hash"] = CONTROLLER.sha256_file(
+            self.plan_dir / "progress.md"
+        )
+        CONTROLLER.save_state(self.plan_dir, state)
+        progress = self.plan_dir / "progress.md"
+        progress.write_text(
+            progress.read_text(encoding="utf-8") + "\nInvalid completion attempt.\n",
+            encoding="utf-8",
+        )
+
+        finalized = CONTROLLER.finalize_task_completion(
+            self.plan_dir,
+            state,
+            {"turn_id": "turn-invalid-completion", "transcript_path": str(self.transcript_path)},
+        )
+        self.assertFalse(finalized)
+        persisted = CONTROLLER.load_state(self.plan_dir)
+        self.assertEqual(persisted["task_status"], CONTROLLER.TASK_STATUS_COMPLETION_PENDING)
+        self.assertFalse(persisted["checkpoint_valid"])
+
+    # ==========================================
     # Function: Verify completion_pending keeps task-complete provenance
     # Method: Change only progress.md and ensure the completion state machine wins
     # ==========================================
     def test_completion_pending_does_not_use_generic_automatic_origin(self) -> None:
+        self.establish_automatic_checkpoint("turn-completion-checkpoint")
         state = CONTROLLER.normalize_state(CONTROLLER.load_state(self.plan_dir))
         state["task_status"] = CONTROLLER.TASK_STATUS_COMPLETION_PENDING
         state["task_completion_progress_hash"] = CONTROLLER.sha256_file(
@@ -444,6 +595,7 @@ class StopCheckpointTests(unittest.TestCase):
     # Method: Change findings only, record the partial checkpoint, then inspect saved recovery state
     # ==========================================
     def test_manual_checkpoint_without_required_updates_defers(self) -> None:
+        self.establish_automatic_checkpoint("turn-findings-checkpoint")
         findings = self.plan_dir / "findings.md"
         findings.write_text(
             findings.read_text(encoding="utf-8") + "\nFinding only.\n",
@@ -598,6 +750,7 @@ class StopCheckpointTests(unittest.TestCase):
     # Method: Accept a task-complete checkpoint, count update_plan as zero Stop-effective work, then stop
     # ==========================================
     def test_task_complete_followed_by_native_plan_update_is_silent(self) -> None:
+        self.update_required_files()
         state = CONTROLLER.normalize_state(CONTROLLER.load_state(self.plan_dir))
         CONTROLLER.accept_checkpoint(
             self.plan_dir,

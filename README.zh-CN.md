@@ -20,7 +20,7 @@ Agent 在工作时继续使用**原生**规划能力；Superplan 只在生命周
 
 - **双宿主** —— 一个插件目录，两套运行时。Codex 读取 `.codex-plugin/`，Claude Code 读取 `.claude-plugin/`；二者共享 `hooks/hooks.json`、`skills/` 与控制器脚本。
 - **对话级持续激活** —— 首次显式激活后，同一对话后续任务自动复用同一个 plan；单个任务完成不会关闭 plan。
-- **任务完成门控** —— 当前任务会一直保持 `active`，直到显式执行 `checkpoint --complete`；任务未完成时，后续请求不得覆盖 `task_plan.md`。完成标记会强制触发一次新的最终 `progress.md` 更新，之后任务状态才正式变为 `complete`。
+- **任务完成门控** —— 当前任务会一直保持 `active`，直到显式执行 `checkpoint --complete`；任务未完成时，后续请求不得覆盖 `task_plan.md`。进入 `completion_pending` 前必须先有新鲜且有效的检查点，完成标记随后还会强制触发一次新的最终 `progress.md` 更新，之后任务状态才正式变为 `complete`。
 - **多对话并发隔离** —— `.planning/.bindings/<session-key>.plan` 为每个 Codex / Claude Code 对话单独路由，同一项目内多个对话不会再争用全局活动指针。
 - **详细历史累计保留** —— 只有前序任务已经正式完成，新任务才可以覆盖 `task_plan.md`；`progress.md` 和 `findings.md` 必须保留所有前序任务的详细内容，不能用 compact summary 替换。
 - **自适应中途检查点** —— `PostToolUse` 根据已用时间、工具活动、输出体量与转录增长估算检查点压力，仅当工作累积到一定程度时才请求一次稀疏语义检查点。
@@ -157,9 +157,9 @@ python3 skills/superplan/scripts/superplan.py checkpoint --plan-id <plan-id> --r
 python3 skills/superplan/scripts/superplan.py checkpoint --plan-id <plan-id> --complete   # 标记“当前任务”完成
 ```
 
-不要因为当前任务完成就执行 `deactivate`。当前任务真正完成并验证后，执行 `checkpoint --complete`：控制器会先将任务置为 `completion_pending`，随后 hook 强制要求对 `progress.md` 再做一次新的最终语义更新；只有检测到这次更新后，任务状态才正式变成 `complete`。Superplan 本身始终保持活动，以便下一条用户请求继续使用同一个 plan。
+不要因为当前任务完成就执行 `deactivate`。当前任务真正完成并验证后，先确保最新的 `task_plan.md` 与 `progress.md` 已被接受为新鲜有效的检查点，再执行 `checkpoint --complete`：控制器会先将任务置为 `completion_pending`，随后 hook 强制要求对 `progress.md` 再做一次新的最终语义更新；只有检测到这次更新后，任务状态才正式变成 `complete`。Superplan 本身始终保持活动，以便下一条用户请求继续使用同一个 plan。
 
-工作过程中让 agent 正常操作即可。hooks 只在工作累积较多时注入稀疏检查点请求，并在轮末校验最终检查点。准备最终回复前，如果尚无有效检查点，或最近检查点之后又发生了实质性工作，应一次性更新 `task_plan.md` 与 `progress.md`，并把它作为最后一个必要的文件操作；`PostToolUse` 会自动记录检查点，`Stop` 仅作兜底。如果 hooks 不可用，任务完成时先运行 `checkpoint --complete`，再对 `progress.md` 做一次最终详细更新，然后再次运行同一个 `checkpoint --complete` 命令即可完成状态确认。
+工作过程中让 agent 正常操作即可。hooks 只在工作累积较多时注入稀疏检查点请求，并在轮末校验最终检查点。准备最终回复前，如果尚无有效检查点，或最近检查点之后又发生了实质性工作，应一次性更新 `task_plan.md` 与 `progress.md`，并把它作为最后一个必要的文件操作；`PostToolUse` 会自动记录检查点，`Stop` 仅作兜底。如果 hooks 不可用，任务完成时先更新两个必需文件并运行普通 `checkpoint` 建立新鲜有效检查点，再运行 `checkpoint --complete`，对 `progress.md` 做一次最终详细更新，然后再次运行同一个 `checkpoint --complete` 命令即可完成状态确认。
 
 在 `Stop` 判定中，原生计划收尾工具的轮末权重为 0，每个小型只读操作权重为 0.25，写入、运行、失败、代理或未知副作用操作的权重至少为 1.0。默认延迟边界使用严格的 `< 3.0`，但前提是已经存在有效检查点；没有有效检查点时必须先同步。符合条件的低风险轮次会保存 `recovery/stop-deferred-tail.txt` 并直接结束，不生成续写提示；下一次 `UserPromptSubmit` 会在处理新请求前注入对账要求。`SessionStart(startup|resume)` 只作为会话边界的恢复兜底，并非每条后续提示都会触发。任务完成同步和实质性陈旧工作仍执行硬性 Stop 校验。
 

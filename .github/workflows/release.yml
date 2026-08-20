@@ -40,6 +40,9 @@ jobs:
           python3 -c "import json,sys; json.load(open('.codex-plugin/plugin.json')); json.load(open('.claude-plugin/plugin.json')); json.load(open('.claude-plugin/marketplace.json')); json.load(open('.agents/plugins/marketplace.json')); print('All manifests valid JSON')"
           python3 -m py_compile skills/superplan/scripts/superplan.py && echo "Controller compiles" 
 
+      - name: Run tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
+
       - name: Package plugin components
         run: |
           VERSION="${{ steps.ver.outputs.version }}"
